@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Arena">
+<meta name="theme-color" content="#0f0e17">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Arena de Jogos</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;user-select:none;}
+:root{
+  --bg:#0f0e17;--surface:#1a1830;--card:#22203a;--border:#2e2b4a;
+  --purple:#7f77dd;--purple-lt:#a89ff0;
+  --green:#1d9e75;--red:#e24b4a;--amber:#ef9f27;
+  --text:#f0eeff;--muted:#8e8aac;
+  --r:14px;--rs:8px;
+}
+html,body{height:100%;background:#000;}
+body{display:flex;justify-content:center;align-items:center;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
+#app{background:var(--bg);width:100%;max-width:430px;height:100dvh;display:flex;flex-direction:column;overflow:hidden;position:relative;}
+/* TOPBAR */
+.topbar{display:flex;align-items:center;padding:env(safe-area-inset-top,14px) 16px 10px;padding-top:max(env(safe-area-inset-top),14px);gap:10px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;}
+.tb-title{font-size:1rem;font-weight:600;color:var(--text);flex:1;}
+.tb-back{background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.4rem;padding:0 8px 0 0;line-height:1;}
+.tb-score{background:var(--card);border:1px solid var(--border);border-radius:20px;padding:4px 12px;font-size:0.78rem;color:var(--purple-lt);white-space:nowrap;}
+/* CONTENT */
+.content{flex:1;overflow-y:auto;padding:16px;-webkit-overflow-scrolling:touch;}
+/* NAVBAR */
+.navbar{display:grid;grid-template-columns:repeat(4,1fr);background:var(--surface);border-top:1px solid var(--border);padding:8px 0;padding-bottom:max(env(safe-area-inset-bottom),8px);flex-shrink:0;}
+.nav-item{display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;padding:4px;}
+.nav-icon{font-size:1.3rem;}
+.nav-lbl{font-size:0.6rem;color:var(--muted);}
+.nav-item.active .nav-lbl{color:var(--purple-lt);}
+/* SCREEN */
+.screen{display:none;}.screen.active{display:block;}
+/* HOME */
+.home-hero{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:1.25rem 1rem;margin-bottom:1rem;text-align:center;}
+.hero-icon{font-size:2.8rem;margin-bottom:6px;}
+.hero-title{font-size:1.25rem;font-weight:600;color:var(--text);margin-bottom:4px;}
+.hero-sub{font-size:0.8rem;color:var(--muted);}
+.game-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:1rem;}
+.game-card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:1rem 0.75rem;cursor:pointer;text-align:center;transition:border-color .15s,transform .1s;}
+.game-card:active{transform:scale(0.96);}
+.game-card.sel{border-color:var(--purple);}
+.gc-icon{font-size:1.75rem;margin-bottom:6px;}
+.gc-name{font-size:0.85rem;font-weight:600;color:var(--text);}
+.gc-desc{font-size:0.68rem;color:var(--muted);margin-top:2px;line-height:1.3;}
+.gc-tag{display:inline-block;margin-top:6px;font-size:0.65rem;padding:2px 8px;border-radius:10px;background:#2e2b4a;color:var(--purple-lt);}
+/* BUTTONS */
+.btn-play{display:block;width:100%;background:var(--purple);color:#fff;border:none;border-radius:var(--r);padding:1rem;font-size:1rem;font-weight:600;cursor:pointer;margin-bottom:8px;}
+.btn-play:active{transform:scale(0.97);}
+.btn-outline{display:block;width:100%;background:transparent;border:1px solid var(--border);border-radius:var(--r);padding:0.85rem;font-size:0.9rem;color:var(--muted);cursor:pointer;margin-bottom:8px;}
+.btn-outline:active{transform:scale(0.97);}
+/* STATS */
+.stats-row{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:1rem;}
+.stat-box{background:var(--card);border:1px solid var(--border);border-radius:var(--rs);padding:0.75rem;}
+.stat-lbl{font-size:0.7rem;color:var(--muted);}
+.stat-val{font-size:1.3rem;font-weight:600;color:var(--text);margin-top:2px;}
+/* TBAR */
+.tbar-wrap{height:5px;background:var(--card);border-radius:3px;margin-bottom:1rem;overflow:hidden;}
+.tbar{height:100%;border-radius:3px;background:var(--purple);transition:width .1s linear,background .3s;}
+/* FEEDBACK */
+.fb{text-align:center;font-size:1rem;font-weight:600;min-height:1.5rem;margin-bottom:0.5rem;}
+.fb.ok{color:var(--green);}.fb.err{color:var(--red);}
+/* PILL */
+.pill{display:inline-block;background:#2e2b4a;color:var(--purple-lt);font-size:0.7rem;padding:3px 10px;border-radius:20px;}
+.pills-row{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:0.75rem;}
+/* MILHAO */
+.prize-strip{background:var(--card);border:1px solid var(--border);border-radius:var(--rs);padding:8px 12px;margin-bottom:0.75rem;display:flex;justify-content:space-between;align-items:center;font-size:0.82rem;}
+.prize-now{color:var(--amber);font-weight:600;}
+.prize-next{color:var(--muted);}
+.q-box{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:1rem;margin-bottom:0.75rem;font-size:0.95rem;color:var(--text);line-height:1.5;}
+.opts-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:0.75rem;}
+.opt-btn{background:var(--card);border:1px solid var(--border);border-radius:var(--rs);padding:0.7rem 0.5rem;font-size:0.82rem;color:var(--text);cursor:pointer;text-align:left;line-height:1.3;width:100%;}
+.opt-btn:active{transform:scale(0.97);}
+.opt-btn.correct{border-color:var(--green);background:#0f2e22;color:#5dcaa5;}
+.opt-btn.wrong{border-color:var(--red);background:#2e0f0f;color:#f09595;}
+.opt-lbl{font-weight:600;margin-right:5px;color:var(--purple-lt);}
+.helps{display:flex;gap:6px;margin-bottom:0.75rem;}
+.help-btn{flex:1;background:var(--card);border:1px solid var(--border);border-radius:var(--rs);padding:8px 3px;font-size:0.72rem;color:var(--muted);cursor:pointer;text-align:center;}
+.help-btn:disabled{opacity:0.3;cursor:not-allowed;}
+/* FORCA */
+.lslot{width:26px;height:34px;border-bottom:2px solid var(--border);display:flex;align-items:flex-end;justify-content:center;font-size:1.1rem;font-weight:600;color:var(--text);}
+.lslot.hit{border-bottom-color:var(--green);}
+.word-display{display:flex;gap:5px;justify-content:center;flex-wrap:wrap;margin-bottom:1rem;}
+.keyboard{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-bottom:0.75rem;}
+.key{background:var(--card);border:1px solid var(--border);border-radius:var(--rs);padding:8px 2px;font-size:0.82rem;font-weight:600;color:var(--text);cursor:pointer;text-align:center;}
+.key:disabled{opacity:0.25;}
+.key.hit{background:#0f2e22;border-color:var(--green);color:#5dcaa5;}
+.key.miss{background:#2e0f0f;border-color:var(--red);color:#f09595;}
+.hint-box{background:var(--card);border:1px solid var(--border);border-radius:var(--rs);padding:8px 12px;font-size:0.78rem;color:var(--muted);margin-bottom:0.75rem;}
+.forca-svg{display:block;margin:0 auto 0.5rem;}
+/* MEMORIA */
+.mem-grid{display:grid;gap:7px;justify-content:center;margin-bottom:0.75rem;}
+.mc{border-radius:var(--rs);perspective:500px;cursor:pointer;}
+.mc-inner{width:100%;height:100%;position:relative;transform-style:preserve-3d;transition:transform .3s;}
+.mc.flipped .mc-inner{transform:rotateY(180deg);}
+.mface{position:absolute;width:100%;height:100%;border-radius:var(--rs);backface-visibility:hidden;display:flex;align-items:center;justify-content:center;}
+.mback{background:var(--purple);color:#fff;font-size:1.2rem;font-weight:700;}
+.mfront{background:var(--card);border:1px solid var(--border);transform:rotateY(180deg);font-size:0.75rem;font-weight:600;color:var(--text);text-align:center;padding:3px;}
+.mc.matched .mfront{border-color:var(--green);background:#0f2e22;color:#5dcaa5;}
+/* CACA */
+.cw-wrap{overflow-x:auto;margin-bottom:0.75rem;}
+.cw-grid{display:inline-grid;gap:2px;background:var(--card);border:1px solid var(--border);border-radius:var(--rs);padding:4px;}
+.cc{width:25px;height:25px;display:flex;align-items:center;justify-content:center;font-size:0.75rem;font-weight:600;border-radius:4px;cursor:pointer;color:var(--text);background:var(--surface);border:1px solid var(--border);}
+.cc.sel{background:var(--purple);color:#fff;border-color:var(--purple);}
+.cc.f0{background:#0f2e22;border-color:#1D9E75;color:#5dcaa5;}
+.cc.f1{background:#2a1a00;border-color:#ef9f27;color:#fac775;}
+.cc.f2{background:#1a0a2e;border-color:#7f77dd;color:#a89ff0;}
+.cc.f3{background:#2e0f1a;border-color:#d4537e;color:#ed93b1;}
+.cc.f4{background:#001a2e;border-color:#378add;color:#85b7eb;}
+.words-list{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:0.75rem;}
+.wchip{font-size:0.75rem;padding:4px 10px;border-radius:20px;background:var(--card);border:1px solid var(--border);color:var(--text);}
+.wchip.done{text-decoration:line-through;color:var(--muted);}
+/* RESULTADO */
+.res-center{text-align:center;padding:0.5rem 0;}
+.res-icon{font-size:3rem;margin-bottom:0.75rem;}
+.res-ttl{font-size:1.3rem;font-weight:600;color:var(--text);margin-bottom:4px;}
+.res-sub{font-size:0.82rem;color:var(--muted);margin-bottom:1rem;}
+/* INSTALL BANNER */
+#install-banner{display:none;background:var(--surface);border-top:1px solid var(--border);padding:10px 16px;flex-shrink:0;text-align:center;}
+#install-banner p{font-size:0.8rem;color:var(--muted);margin-bottom:8px;}
+#install-banner button{background:var(--purple);color:#fff;border:none;border-radius:var(--rs);padding:8px 20px;font-size:0.85rem;font-weight:600;cursor:pointer;}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div class="topbar" id="topbar">
+    <div class="tb-title" id="tb-title">🎮 Arena</div>
+    <div class="tb-score" id="tb-score">⭐ 0 pts</div>
+  </div>
+
+  <div class="content">
+    <!-- HOME -->
+    <div id="s-home" class="screen active">
+      <div class="home-hero">
+        <div class="hero-icon">🎮</div>
+        <div class="hero-title">Arena de Jogos</div>
+        <div class="hero-sub">4 jogos · níveis infinitos · 100% offline</div>
+      </div>
+      <div class="game-grid" id="mode-grid"></div>
+      <button class="btn-play" onclick="startSel()">Jogar agora</button>
+    </div>
+
+    <!-- GAME -->
+    <div id="s-game" class="screen">
+      <div class="tbar-wrap"><div class="tbar" id="tbar"></div></div>
+      <div class="fb" id="fb"></div>
+      <div id="ga"></div>
+    </div>
+
+    <!-- RESULT -->
+    <div id="s-result" class="screen">
+      <div class="res-center">
+        <div class="res-icon" id="r-icon">🏆</div>
+        <div class="res-ttl" id="r-ttl">Parabéns!</div>
+        <div class="res-sub" id="r-sub"></div>
+        <div class="stats-row" id="r-stats"></div>
+        <button class="btn-play" id="r-next">Próxima rodada</button>
+        <button class="btn-outline" onclick="goHome()">Voltar ao menu</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="navbar">
+    <div class="nav-item active" onclick="navGo('milhao')" id="nav-milhao"><div class="nav-icon">💰</div><div class="nav-lbl">Milhão</div></div>
+    <div class="nav-item" onclick="navGo('forca')" id="nav-forca"><div class="nav-icon">🪝</div><div class="nav-lbl">Forca</div></div>
+    <div class="nav-item" onclick="navGo('memoria')" id="nav-memoria"><div class="nav-icon">🧠</div><div class="nav-lbl">Memória</div></div>
+    <div class="nav-item" onclick="navGo('cw')" id="nav-cw"><div class="nav-icon">🔍</div><div class="nav-lbl">Caça-palavras</div></div>
+  </div>
+
+  <div id="install-banner">
+    <p>Instale o app para jogar offline a qualquer momento!</p>
+    <button id="install-btn">Instalar no celular</button>
+  </div>
+
+</div>
+<script>
+/* ── SERVICE WORKER ── */
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('./sw.js').catch(()=>{});
+}
+
+/* ── PWA INSTALL ── */
+let deferredPrompt=null;
+window.addEventListener('beforeinstallprompt',e=>{
+  e.preventDefault();deferredPrompt=e;
+  document.getElementById('install-banner').style.display='block';
+});
+document.getElementById('install-btn').addEventListener('click',()=>{
+  if(!deferredPrompt)return;
+  deferredPrompt.prompt();
+  deferredPrompt.userChoice.then(()=>{deferredPrompt=null;document.getElementById('install-banner').style.display='none';});
+});
+window.addEventListener('appinstalled',()=>{document.getElementById('install-banner').style.display='none';});
+
+/* ── DATA ── */
+const MODES=[
+  {id:'milhao',name:'Quiz do Milhão',icon:'💰',desc:'15 perguntas, prêmio crescente',tag:'Conhecimentos gerais'},
+  {id:'forca',name:'Forca',icon:'🪝',desc:'Adivinhe a palavra',tag:'Vocabulário'},
+  {id:'memoria',name:'Memória',icon:'🧠',desc:'Encontre os pares',tag:'Raciocínio'},
+  {id:'cw',name:'Caça-palavras',icon:'🔍',desc:'Palavras escondidas no grid',tag:'Atenção'},
+];
+const PERGUNTAS=[
+  {q:'Qual é a capital do Brasil?',opts:['São Paulo','Brasília','Rio de Janeiro','Salvador'],r:1},
+  {q:'Quanto é 15 × 15?',opts:['200','225','215','230'],r:1},
+  {q:'Qual planeta é o maior do sistema solar?',opts:['Saturno','Netuno','Júpiter','Urano'],r:2},
+  {q:'Quem escreveu "Dom Casmurro"?',opts:['José de Alencar','Carlos Drummond','Machado de Assis','Clarice Lispector'],r:2},
+  {q:'Em que ano o Brasil foi descoberto?',opts:['1492','1500','1510','1498'],r:1},
+  {q:'Qual é o maior oceano do mundo?',opts:['Atlântico','Índico','Ártico','Pacífico'],r:3},
+  {q:'Quantos lados tem um hexágono?',opts:['5','7','6','8'],r:2},
+  {q:'Qual elemento tem símbolo "Au"?',opts:['Prata','Ouro','Alumínio','Cobre'],r:1},
+  {q:'Quem pintou a Mona Lisa?',opts:['Michelangelo','Rafael','Da Vinci','Botticelli'],r:2},
+  {q:'Qual é a fórmula química da água?',opts:['CO2','H2O2','H2O','HO'],r:2},
+  {q:'Em qual país fica a Torre Eiffel?',opts:['Itália','Espanha','França','Bélgica'],r:2},
+  {q:'Qual é o rio mais longo do mundo?',opts:['Nilo','Amazonas','Mississipi','Yangtzé'],r:0},
+  {q:'Quantos estados tem o Brasil?',opts:['25','26','27','28'],r:1},
+  {q:'Qual é o menor país do mundo?',opts:['Mônaco','Liechtenstein','Vaticano','San Marino'],r:2},
+  {q:'Quem foi o primeiro presidente do Brasil?',opts:['Getúlio Vargas','Floriano Peixoto','Dom Pedro I','Deodoro da Fonseca'],r:3},
+  {q:'Qual instrumento tem 88 teclas?',opts:['Órgão','Piano','Acordeão','Cravo'],r:1},
+  {q:'Quanto é a raiz quadrada de 144?',opts:['11','13','14','12'],r:3},
+  {q:'Qual é o metal mais leve?',opts:['Alumínio','Lítio','Berílio','Sódio'],r:1},
+  {q:'Quantos continentes existem?',opts:['5','6','7','8'],r:2},
+  {q:'Qual é a capital da Argentina?',opts:['Córdoba','Rosário','Buenos Aires','Montevidéu'],r:2},
+  {q:'Quem escreveu "1984"?',opts:['Huxley','Kafka','Orwell','Bradbury'],r:2},
+  {q:'Quantos cromossomos tem um humano?',opts:['44','46','48','42'],r:1},
+  {q:'Qual é a capital da Austrália?',opts:['Sydney','Melbourne','Brisbane','Camberra'],r:3},
+  {q:'Qual é o maior país do mundo em área?',opts:['China','EUA','Canada','Rússia'],r:3},
+  {q:'Quem descobriu a penicilina?',opts:['Pasteur','Fleming','Curie','Jenner'],r:1},
+  {q:'Em qual cidade fica o Coliseu?',opts:['Atenas','Roma','Nápoles','Florença'],r:1},
+  {q:'Qual é a velocidade da luz (km/s)?',opts:['100.000','300.000','200.000','400.000'],r:1},
+  {q:'Qual animal produz a seda?',opts:['Abelha','Aranha','Lagarta','Besouro'],r:2},
+  {q:'Quantos planetas tem o sistema solar?',opts:['7','8','9','10'],r:1},
+  {q:'Qual é o osso mais longo do corpo humano?',opts:['Úmero','Rádio','Fêmur','Tíbia'],r:2},
+];
+const PREMIOS=['R$ 1.000','R$ 2.000','R$ 3.000','R$ 5.000','R$ 10.000','R$ 20.000','R$ 50.000','R$ 100.000','R$ 200.000','R$ 300.000','R$ 500.000','R$ 750.000','R$ 1 milhão','R$ 2 milhões','R$ 5 milhões'];
+const PALAVRAS=[
+  {w:'ABACAXI',h:'Fruta tropical com coroa'},
+  {w:'FILOSOFIA',h:'Amor pela sabedoria'},
+  {w:'COMPUTADOR',h:'Máquina de processar dados'},
+  {w:'OCEANO',h:'Grande massa de água salgada'},
+  {w:'XADREZ',h:'Jogo de estratégia com rei e rainha'},
+  {w:'PIRAMIDE',h:'Monumento egípcio'},
+  {w:'BORBOLETA',h:'Inseto que começa como lagarta'},
+  {w:'FUTEBOL',h:'Esporte mais popular do Brasil'},
+  {w:'TELESCOPIO',h:'Instrumento para ver estrelas'},
+  {w:'BIBLIOTECA',h:'Local cheio de livros'},
+  {w:'GIRASSOL',h:'Flor que segue o sol'},
+  {w:'METEORITO',h:'Rocha que cai do espaço'},
+  {w:'DEMOCRACIA',h:'Governo do povo'},
+  {w:'SUBMARINO',h:'Embarcação subaquática'},
+  {w:'VULCAO',h:'Montanha que expele lava'},
+  {w:'ENIGMA',h:'Algo difícil de entender'},
+  {w:'LABIRINTO',h:'Lugar cheio de caminhos confusos'},
+  {w:'PARALELO',h:'Linhas que nunca se encontram'},
+  {w:'QUIMERA',h:'Sonho impossível ou ser mitológico'},
+  {w:'SINFONIA',h:'Composição musical elaborada'},
+];
+const MEM_TEMAS=[
+  ['EINSTEIN','RELATIVIDADE','NEWTON','GRAVIDADE','DARWIN','EVOLUCAO','CURIE','RADIO'],
+  ['PARIS','EIFFEL','ROMA','COLISEU','TÓQUIO','FUJI','DUBAI','BURJ'],
+  ['PYTHON','JAVA','C++','RUST','KOTLIN','SWIFT','RUBY','SCALA'],
+  ['BACH','SINFONIA','JAZZ','BLUES','OPERA','SOPRANO','REGGAE','RITMO'],
+  ['VENUS','MARTE','PLUTAO','URANO','SATURNO','NETUNO','JUPITER','MERCURIO'],
+];
+const CW_TEMAS=[
+  {tema:'Países da América',palavras:['BRASIL','CHILE','PERU','CUBA','HAITI','MEXICO']},
+  {tema:'Esportes',palavras:['TENIS','BOXE','GOLFE','POLO','REMO','JUDO']},
+  {tema:'Planetas',palavras:['MARTE','VENUS','TERRA','URANO','PLUTAO','SATURNO']},
+  {tema:'Frutas',palavras:['MANGA','UVAS','PERA','KIWI','FIGO','MELAO']},
+  {tema:'Profissões',palavras:['MEDICO','JUIZ','PILOTO','CHEF','ATOR','JUIZA']},
+];
+
+/* ── HELPERS ── */
+function shuf(a){return[...a].sort(()=>Math.random()-.5);}
+function rnd(a){return a[Math.floor(Math.random()*a.length)];}
+function $i(id){return document.getElementById(id);}
+
+/* ── STATE ── */
+let selMode='milhao',st={},totalPts=parseInt(localStorage.getItem('arena_pts')||'0'),tmr=null;
+$i('tb-score').textContent='⭐ '+totalPts+' pts';
+
+function savePts(){localStorage.setItem('arena_pts',totalPts);}
+function addPts(n){totalPts+=n;savePts();$i('tb-score').textContent='⭐ '+totalPts+' pts';}
+
+/* ── SCREENS ── */
+function showScreen(s){document.querySelectorAll('.screen').forEach(x=>x.classList.remove('active'));$i(s).classList.add('active');}
+function setTopbar(title,back){
+  $i('tb-title').innerHTML=back?`<button class="tb-back" onclick="goHome()">‹</button>${title}`:title;
+}
+function goHome(){clearTmr();showScreen('s-home');setTopbar('🎮 Arena',false);renderModes();}
+function navGo(mode){selMode=mode;document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));$i('nav-'+mode).classList.add('active');goHome();startSel();}
+function renderModes(){
+  $i('mode-grid').innerHTML=MODES.map(m=>`<div class="game-card${m.id===selMode?' sel':''}" onclick="selM('${m.id}')">
+    <div class="gc-icon">${m.icon}</div><div class="gc-name">${m.name}</div>
+    <div class="gc-desc">${m.desc}</div><div class="gc-tag">${m.tag}</div>
+  </div>`).join('');
+}
+function selM(id){selMode=id;renderModes();document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));$i('nav-'+id).classList.add('active');}
+renderModes();
+function startSel(){showScreen('s-game');if(selMode==='milhao')initMilhao();else if(selMode==='forca')initForca();else if(selMode==='memoria')initMemoria();else initCW();}
+
+/* ── TIMER ── */
+function clearTmr(){if(tmr){clearInterval(tmr);tmr=null;}}
+function startTmr(secs,onEnd){
+  clearTmr();const bar=$i('tbar');let rem=secs;
+  bar.style.width='100%';bar.style.background='#7f77dd';
+  tmr=setInterval(()=>{rem-=.1;const p=Math.max(0,rem/secs*100);
+    bar.style.width=p+'%';bar.style.background=p>40?'#7f77dd':p>20?'#ef9f27':'#e24b4a';
+    if(rem<=0){clearTmr();onEnd();}},100);
+}
+function setFB(msg,cls){const e=$i('fb');e.textContent=msg;e.className='fb '+(cls||'');if(cls)setTimeout(()=>{e.textContent='';e.className='fb';},900);}
+
+/* ═══════════════ QUIZ DO MILHÃO ═══════════════ */
+function initMilhao(){
+  const _rod=(st&&st.mode==='milhao'?(st.rodada||0):0)+1;
+  st={mode:'milhao',pergs:shuf(PERGUNTAS),idx:0,score:0,ajudas:{a50:true,pub:true,pular:true},elim:[],rodada:_rod};
+  setTopbar('💰 Quiz do Milhão',true);$i('tbar').style.width='100%';clearTmr();renderM();
+}
+function renderM(){
+  const p=st.pergs[st.idx],lvl=st.idx,lbls=['A','B','C','D'],t=Math.max(8,20-lvl);
+  $i('ga').innerHTML=`
+    <div class="prize-strip">
+      <span>Pergunta ${lvl+1}/15</span>
+      <span class="prize-now">${PREMIOS[lvl]}</span>
+      <span class="prize-next">→ ${PREMIOS[lvl+1]||'🏆'}</span>
+    </div>
+    <div class="q-box">${p.q}</div>
+    <div class="opts-grid">${p.opts.map((o,i)=>{
+      if(st.elim.includes(i)&&i!==p.r)return`<div class="opt-btn" style="opacity:.2">${lbls[i]}) —</div>`;
+      return`<button class="opt-btn" onclick="respM(${i})"><span class="opt-lbl">${lbls[i]})</span> ${o}</button>`;
+    }).join('')}</div>
+    <div class="helps">
+      <button class="help-btn" onclick="aj50()" ${!st.ajudas.a50?'disabled':''}>50/50</button>
+      <button class="help-btn" onclick="ajPub()" ${!st.ajudas.pub?'disabled':''}>Plateia</button>
+      <button class="help-btn" onclick="ajPular()" ${!st.ajudas.pular?'disabled':''}>Pular</button>
+    </div>`;
+  startTmr(t,()=>respM(-1));
+}
+function respM(idx){
+  clearTmr();const p=st.pergs[st.idx];
+  $i('ga').querySelectorAll('.opt-btn').forEach((b,i)=>{
+    if(i===p.r)b.classList.add('correct');
+    else if(i===idx&&idx!==p.r)b.classList.add('wrong');
+    b.style.pointerEvents='none';
+  });
+  document.querySelectorAll('.help-btn').forEach(b=>b.disabled=true);
+  setTimeout(()=>{
+    if(idx===p.r){addPts(100*(st.idx+1));st.score=st.idx+1;st.idx++;st.elim=[];
+      if(st.idx>=15||st.idx>=st.pergs.length)showResM(true);else renderM();
+    }else showResM(false);
+  },1300);
+}
+function aj50(){st.ajudas.a50=false;const p=st.pergs[st.idx];st.elim=shuf([0,1,2,3].filter(i=>i!==p.r)).slice(0,2);renderM();}
+function ajPub(){st.ajudas.pub=false;const p=st.pergs[st.idx];
+  const pcts=[0,1,2,3].map(i=>i===p.r?Math.floor(Math.random()*25)+55:Math.floor(Math.random()*15));
+  const t=pcts.reduce((a,b)=>a+b,0);const n=pcts.map(x=>Math.round(x/t*100));
+  setFB('Plateia: A '+n[0]+'%  B '+n[1]+'%  C '+n[2]+'%  D '+n[3]+'%','ok');
+}
+function ajPular(){st.ajudas.pular=false;st.elim=[];st.idx=Math.min(st.idx+1,st.pergs.length-1);renderM();}
+function showResM(ganhou){
+  clearTmr();const ganho=ganhou?PREMIOS[14]:st.score>0?PREMIOS[Math.max(0,st.score-1)]:'R$ 0';
+  $i('r-icon').textContent=ganhou?'🏆':st.score>5?'😅':'😢';
+  $i('r-ttl').textContent=ganhou?'Você ganhou o milhão!':'Fim de jogo!';
+  $i('r-sub').textContent=ganhou?'Incrível! Todas respondidas!':'Chegou na pergunta '+(st.score+1);
+  $i('r-stats').innerHTML=`<div class="stat-box"><div class="stat-lbl">Prêmio</div><div class="stat-val" style="font-size:.9rem">${ganho}</div></div>
+    <div class="stat-box"><div class="stat-lbl">Certas</div><div class="stat-val">${st.score}</div></div>
+    <div class="stat-box"><div class="stat-lbl">Rodada</div><div class="stat-val">${st.rodada}</div></div>
+    <div class="stat-box"><div class="stat-lbl">Pontos totais</div><div class="stat-val">${totalPts}</div></div>`;
+  $i('r-next').textContent='Nova rodada';$i('r-next').onclick=initMilhao;setTopbar('💰 Resultado',true);showScreen('s-result');
+}
+
+/* ═══════════════ FORCA ═══════════════ */
+function initForca(){
+  const item=rnd(PALAVRAS);
+  st={mode:'forca',word:item.w,hint:item.h,guessed:new Set(),errors:0,max:6,wins:st.wins||0,rodada:(st.rodada||0)+1,_wc:false};
+  setTopbar('🪝 Forca',true);$i('tbar').style.width='100%';clearTmr();renderForca();
+}
+function renderForca(){
+  const{word,hint,guessed,errors,max,wins}=st;
+  const ALFA='ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+  const segs=[
+    `<line x1="10" y1="125" x2="80" y2="125" stroke="#8e8aac" stroke-width="3"/>`,
+    `<line x1="28" y1="125" x2="28" y2="10" stroke="#8e8aac" stroke-width="3"/>`,
+    `<line x1="28" y1="10" x2="62" y2="10" stroke="#8e8aac" stroke-width="3"/>`,
+    `<line x1="62" y1="10" x2="62" y2="22" stroke="#8e8aac" stroke-width="3"/>`,
+    `<circle cx="62" cy="32" r="9" stroke="#e24b4a" stroke-width="2" fill="none"/>`,
+    `<line x1="62" y1="41" x2="62" y2="78" stroke="#e24b4a" stroke-width="2"/>
+     <line x1="62" y1="55" x2="50" y2="68" stroke="#e24b4a" stroke-width="2"/>
+     <line x1="62" y1="55" x2="74" y2="68" stroke="#e24b4a" stroke-width="2"/>
+     <line x1="62" y1="78" x2="50" y2="100" stroke="#e24b4a" stroke-width="2"/>
+     <line x1="62" y1="78" x2="74" y2="100" stroke="#e24b4a" stroke-width="2"/>`,
+  ];
+  const won=word.split('').every(l=>guessed.has(l));
+  const lost=errors>=max;
+  if(won&&!st._wc){st._wc=true;st.wins++;addPts(200);}
+  $i('ga').innerHTML=`
+    <div class="pills-row"><div class="pill">❤️ ${max-errors} tentativas</div><div class="pill">🏆 ${st.wins} vitórias</div></div>
+    <svg class="forca-svg" width="90" height="130" viewBox="0 0 90 130">${segs.slice(0,errors+1).join('')}</svg>
+    <div class="hint-box">💡 Dica: ${hint}</div>
+    <div class="word-display">${word.split('').map(l=>`<div class="lslot${guessed.has(l)||won||lost?' hit':''}">${guessed.has(l)||won||lost?l:'_'}</div>`).join('')}</div>
+    ${won||lost
+      ?`<div style="text-align:center;font-size:1rem;font-weight:600;color:${won?'#1d9e75':'#e24b4a'};margin-bottom:.75rem">${won?'Você acertou! 🎉':'Palavra: '+word+' 💀'}</div>
+        <button class="btn-play" onclick="initForca()">Nova palavra</button>
+        <button class="btn-outline" onclick="goHome()">Menu</button>`
+      :`<div class="keyboard">${ALFA.map(l=>`<button class="key${guessed.has(l)?(word.includes(l)?' hit':' miss'):''}" onclick="chutar('${l}')" ${guessed.has(l)?'disabled':''}>${l}</button>`).join('')}</div>`}`;
+}
+function chutar(l){st.guessed.add(l);if(!st.word.includes(l))st.errors++;st._wc=false;renderForca();}
+
+/* ═══════════════ MEMÓRIA ═══════════════ */
+function initMemoria(){
+  const nivelAtual=(st&&st.mode==='mem'?(st.nivel||0):0)+1;
+  const wins=(st&&st.mode==='mem'?st.wins||0:0);
+  const tema=rnd(MEM_TEMAS),pairs=Math.min(3+nivelAtual,8);
+  const picked=shuf(tema).slice(0,pairs);
+  const cards=shuf([...picked,...picked].map((e,i)=>({id:i,txt:e,matched:false,flipped:false})));
+  st={mode:'mem',cards,flipped:[],matched:0,total:pairs,locked:false,moves:0,nivel:nivelAtual,wins:wins};
+  setTopbar('🧠 Memória',true);$i('tbar').style.width='100%';clearTmr();renderMem();
+}
+function renderMem(){
+  const{cards,matched,total,nivel,moves}=st,sz=Math.max(56,72-total);
+  $i('ga').innerHTML=`
+    <div class="pills-row"><div class="pill">🧩 ${matched}/${total} pares</div><div class="pill">🔄 ${moves} jogadas</div><div class="pill">🎯 Nível ${nivel}</div></div>
+    <div class="mem-grid" style="grid-template-columns:repeat(4,${sz}px)">
+      ${cards.map((c,i)=>`<div class="mc${c.flipped?' flipped':''}${c.matched?' matched':''}" style="width:${sz}px;height:${sz}px" onclick="flipMem(${i})">
+        <div class="mc-inner"><div class="mface mback">?</div><div class="mface mfront">${c.txt}</div></div>
+      </div>`).join('')}
+    </div>`;
+}
+function flipMem(i){
+  if(st.locked)return;const c=st.cards[i];
+  if(c.flipped||c.matched)return;
+  c.flipped=true;st.flipped.push(i);st.moves++;renderMem();
+  if(st.flipped.length===2){
+    st.locked=true;const[a,b]=st.flipped;
+    if(st.cards[a].txt===st.cards[b].txt){
+      st.cards[a].matched=true;st.cards[b].matched=true;st.matched++;
+      st.flipped=[];st.locked=false;renderMem();
+      if(st.matched>=st.total){addPts(300);setTimeout(()=>{
+        $i('r-icon').textContent='🧠';$i('r-ttl').textContent='Memória perfeita!';
+        $i('r-sub').textContent='Nível '+st.nivel+' — '+st.moves+' jogadas';
+        $i('r-stats').innerHTML=`<div class="stat-box"><div class="stat-lbl">Jogadas</div><div class="stat-val">${st.moves}</div></div>
+          <div class="stat-box"><div class="stat-lbl">Pares</div><div class="stat-val">${st.total}</div></div>
+          <div class="stat-box"><div class="stat-lbl">Nível</div><div class="stat-val">${st.nivel}</div></div>
+          <div class="stat-box"><div class="stat-lbl">Pontos totais</div><div class="stat-val">${totalPts}</div></div>`;
+        $i('r-next').textContent='Próximo nível';$i('r-next').onclick=initMemoria;setTopbar('🧠 Resultado',true);showScreen('s-result');
+      },700);}
+    }else{setTimeout(()=>{st.cards[a].flipped=false;st.cards[b].flipped=false;st.flipped=[];st.locked=false;renderMem();},900);}
+  }
+}
+
+/* ═══════════════ CAÇA-PALAVRAS ═══════════════ */
+function initCW(){
+  const _rod=(st&&st.mode==='cw'?(st.rodada||0):0)+1;
+  const tema=rnd(CW_TEMAS),SIZE=9,grid=buildCW(tema.palavras,SIZE);
+  st={mode:'cw',grid,palavras:tema.palavras,tema:tema.tema,found:[],sel:[],rodada:_rod};
+  setTopbar('🔍 Caça-palavras',true);$i('tbar').style.width='100%';clearTmr();renderCW();
+}
+function buildCW(palavras,SIZE){
+  const g=Array.from({length:SIZE},()=>Array(SIZE).fill(''));
+  const dirs=[[0,1],[1,0],[1,1],[-1,1]];const placed=[];
+  for(const w of palavras){
+    let ok=false;
+    for(let t=0;t<100&&!ok;t++){
+      const d=rnd(dirs),maxR=d[0]===0?SIZE:SIZE-w.length,maxC=d[1]===0?SIZE:SIZE-w.length;
+      if(maxR<1||maxC<1)continue;
+      const r=Math.floor(Math.random()*maxR),c=Math.floor(Math.random()*maxC),cells=[];
+      for(let i=0;i<w.length;i++){
+        const nr=r+i*d[0],nc=c+i*d[1];
+        if(nr<0||nr>=SIZE||nc<0||nc>=SIZE)break;
+        if(g[nr][nc]!==''&&g[nr][nc]!==w[i])break;
+        cells.push([nr,nc,w[i]]);
+      }
+      if(cells.length===w.length){cells.forEach(([nr,nc,l])=>g[nr][nc]=l);placed.push({w,cells:cells.map(([nr,nc])=>nr+','+nc)});ok=true;}
+    }
+  }
+  const alfa='ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  for(let r=0;r<SIZE;r++)for(let c=0;c<SIZE;c++)if(!g[r][c])g[r][c]=alfa[Math.floor(Math.random()*26)];
+  return{cells:g,placed,SIZE};
+}
+function renderCW(){
+  const{grid,palavras,found,sel,tema}=st,{cells,placed,SIZE}=grid;
+  const fc={};
+  found.forEach((fw,fi)=>{const pw=placed.find(p=>p.w===fw);if(pw)pw.cells.forEach(k=>{fc[k]='f'+(fi%5);});});
+  $i('ga').innerHTML=`
+    <div class="pills-row"><div class="pill">📋 ${tema}</div><div class="pill">✅ ${found.length}/${palavras.length}</div></div>
+    <div class="words-list">${palavras.map(w=>`<div class="wchip${found.includes(w)?' done':''}">${w}</div>`).join('')}</div>
+    <div class="cw-wrap"><div class="cw-grid" id="cw-grid" style="grid-template-columns:repeat(${SIZE},25px)">
+      ${cells.map((row,r)=>row.map((l,c)=>{
+        const k=r+','+c,cls=fc[k]||(sel.includes(k)?'sel':'');
+        return`<div class="cc${cls?' '+cls:''}" data-r="${r}" data-c="${c}">${l}</div>`;
+      }).join('')).join('')}
+    </div></div>
+    <div style="font-size:.72rem;color:var(--muted);text-align:center;margin-top:4px">Arraste o dedo sobre as letras para marcar</div>`;
+  initCWDrag();
+}
+function getCellFromPoint(x,y){
+  const grid=$i('cw-grid');
+  if(!grid)return null;
+  const els=grid.querySelectorAll('.cc');
+  for(const el of els){
+    const rect=el.getBoundingClientRect();
+    if(x>=rect.left&&x<=rect.right&&y>=rect.top&&y<=rect.bottom){
+      return{r:parseInt(el.dataset.r),c:parseInt(el.dataset.c)};
+    }
+  }
+  return null;
+}
+function initCWDrag(){
+  const grid=$i('cw-grid');
+  if(!grid)return;
+  let dragging=false,startR=null,startC=null;
+
+  function startDrag(x,y){
+    const cell=getCellFromPoint(x,y);
+    if(!cell)return;
+    dragging=true;
+    startR=cell.r;startC=cell.c;
+    st.sel=[cell.r+','+cell.c];
+    renderCWHighlight();
+  }
+  function moveDrag(x,y){
+    if(!dragging)return;
+    const cell=getCellFromPoint(x,y);
+    if(!cell)return;
+    // calcula direção do start até cell atual
+    const dr=Math.sign(cell.r-startR),dc=Math.sign(cell.c-startC);
+    // só aceita direções válidas (h, v, diagonal)
+    if(cell.r===startR&&cell.c===startC){st.sel=[startR+','+startC];renderCWHighlight();return;}
+    if(dr!==0&&dc!==0&&Math.abs(cell.r-startR)!==Math.abs(cell.c-startC))return;
+    const steps=Math.max(Math.abs(cell.r-startR),Math.abs(cell.c-startC));
+    const newSel=[];
+    for(let i=0;i<=steps;i++)newSel.push((startR+i*dr)+','+(startC+i*dc));
+    st.sel=newSel;
+    renderCWHighlight();
+  }
+  function endDrag(){
+    if(!dragging)return;
+    dragging=false;
+    checkCWWord();
+  }
+
+  // Touch
+  grid.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];startDrag(t.clientX,t.clientY);},{passive:false});
+  grid.addEventListener('touchmove',e=>{e.preventDefault();const t=e.touches[0];moveDrag(t.clientX,t.clientY);},{passive:false});
+  grid.addEventListener('touchend',e=>{e.preventDefault();endDrag();},{passive:false});
+  // Mouse (desktop)
+  grid.addEventListener('mousedown',e=>{startDrag(e.clientX,e.clientY);});
+  grid.addEventListener('mousemove',e=>{moveDrag(e.clientX,e.clientY);});
+  grid.addEventListener('mouseup',()=>endDrag());
+  grid.addEventListener('mouseleave',()=>{if(dragging){dragging=false;checkCWWord();}});
+}
+function renderCWHighlight(){
+  const{grid,found,sel}=st,{cells,placed,SIZE}=grid;
+  const fc={};
+  found.forEach((fw,fi)=>{const pw=placed.find(p=>p.w===fw);if(pw)pw.cells.forEach(k=>{fc[k]='f'+(fi%5);});});
+  const gridEl=$i('cw-grid');
+  if(!gridEl)return;
+  gridEl.querySelectorAll('.cc').forEach(el=>{
+    const k=el.dataset.r+','+el.dataset.c;
+    el.className='cc'+(fc[k]?' '+fc[k]:sel.includes(k)?' sel':'');
+  });
+}
+function checkCWWord(){
+  for(const pw of st.grid.placed){
+    if(st.found.includes(pw.w))continue;
+    const s=new Set(st.sel);
+    if(pw.cells.length===s.size&&pw.cells.every(pk=>s.has(pk))){
+      st.found.push(pw.w);st.sel=[];addPts(150);
+      // vibrar se disponível
+      if(navigator.vibrate)navigator.vibrate(60);
+      renderCW();
+      if(st.found.length>=st.palavras.length){setTimeout(()=>{
+        $i('r-icon').textContent='🔍';$i('r-ttl').textContent='Todas encontradas!';
+        $i('r-sub').textContent='Você achou as '+st.palavras.length+' palavras — tema: '+st.tema;
+        $i('r-stats').innerHTML=`<div class="stat-box"><div class="stat-lbl">Palavras</div><div class="stat-val">${st.palavras.length}</div></div>
+          <div class="stat-box"><div class="stat-lbl">Tema</div><div class="stat-val" style="font-size:.78rem">${st.tema}</div></div>
+          <div class="stat-box"><div class="stat-lbl">Rodada</div><div class="stat-val">${st.rodada}</div></div>
+          <div class="stat-box"><div class="stat-lbl">Pontos totais</div><div class="stat-val">${totalPts}</div></div>`;
+        $i('r-next').textContent='Próximo tema';$i('r-next').onclick=initCW;setTopbar('🔍 Resultado',true);showScreen('s-result');
+      },600);}
+      return;
+    }
+  }
+  st.sel=[];
+  renderCWHighlight();
+}
+</script>
+</body>
+</html>

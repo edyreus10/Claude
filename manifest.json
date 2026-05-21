@@ -1,0 +1,14 @@
+{
+  "name": "Arena de Jogos",
+  "short_name": "Arena",
+  "description": "4 jogos para adultos: Quiz do Milhão, Forca, Memória e Caça-palavras",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0f0e17",
+  "theme_color": "#0f0e17",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
