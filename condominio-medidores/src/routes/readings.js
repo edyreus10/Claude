@@ -2,7 +2,8 @@
 const express = require('express');
 const { requireAdmin } = require('../auth');
 const { audit } = require('../audit');
-const { ValidationError, str, id, number } = require('../validate');
+const { ValidationError, str, id, number, oneOf } = require('../validate');
+const { recalcMeter } = require('../db');
 const F = require('../format');
 const S = require('../services');
 
@@ -31,9 +32,25 @@ function getReading(db, readingId) {
 }
 
 const typeLower = (m) => m.type_name.toLowerCase();
+const pick = (r) => ({ meter_id: r.meter_id, meter_name: r.meter_name, reading_date: r.reading_date, reading_time: r.reading_time,
+  value: r.value, consumption: r.consumption, occurrence: r.occurrence, occurrence_note: r.occurrence_note,
+  responsible: r.responsible, notes: r.notes, created_by: r.created_by, created_at: r.created_at });
 
 module.exports = (db) => {
   const r = express.Router();
+
+  /**
+   * Consumo esperado para um intervalo, pela média das últimas leituras do medidor.
+   * Serve para pegar erros de digitação (ex.: 4980 no lugar de 498,0).
+   */
+  function expectedConsumption(meterId, date, days) {
+    const rows = db.prepare(`SELECT consumption, interval_days FROM readings WHERE meter_id = ? AND reading_date < ?
+        AND consumption IS NOT NULL AND interval_days > 0 ORDER BY reading_date DESC, reading_time DESC LIMIT 10`).all(meterId, date);
+    if (rows.length < 3) return null;
+    const c = rows.reduce((x, r) => x + r.consumption, 0);
+    const d = rows.reduce((x, r) => x + r.interval_days, 0);
+    return (c / d) * Math.max(days, 1);
+  }
 
   function validate(body, existing) {
     const meterId = existing ? existing.meter_id : id(body.meter_id, 'medidor');
@@ -48,7 +65,11 @@ module.exports = (db) => {
     const time = String(body.reading_time || '08:00');
     if (!F.isValidTime(time)) throw new ValidationError('Informe um horário válido (ex.: 08:00).');
     const value = number(body.value, 'Leitura atual', { requiredField: true, min: 0 });
-    const isReset = body.is_reset === true || body.is_reset === 1 || body.is_reset === '1' ? 1 : 0;
+    const occurrence = oneOf(body.occurrence || null, Object.keys(S.OCCURRENCES), 'Ocorrência', null);
+    const occurrenceNote = str(body.occurrence_note, 500);
+    if (occurrence && (!occurrenceNote || occurrenceNote.length < 3)) {
+      throw new ValidationError('Descreva a ocorrência (o que aconteceu com o medidor ou com a leitura).');
+    }
     const exclude = existing ? existing.id : 0;
 
     const dup = db.prepare('SELECT id FROM readings WHERE meter_id = ? AND reading_date = ? AND reading_time = ? AND id <> ?')
@@ -56,10 +77,10 @@ module.exports = (db) => {
     if (dup) throw new ValidationError(`Já existe uma leitura deste medidor em ${F.fmtDate(date)} às ${time}.`);
 
     const prev = S.previousReading(db, meterId, date, time, exclude);
-    if (prev && !isReset && value < prev.value) {
+    if (prev && !occurrence && value < prev.value) {
       const err = new ValidationError(`A leitura informada (${F.fmtNum(value)} ${meter.unit}) é menor que a leitura anterior `
-        + `(${F.fmtNum(prev.value)} ${meter.unit} em ${F.fmtDate(prev.reading_date)}). Confira o valor. `
-        + 'Se o medidor foi trocado ou zerado, marque essa opção.');
+        + `(${F.fmtNum(prev.value)} ${meter.unit} em ${F.fmtDate(prev.reading_date)}). O consumo não pode ser calculado. `
+        + 'Confira o valor ou informe a ocorrência: troca do medidor, zeramento, correção de leitura ou outra.');
       err.code = 'LOWER_THAN_PREVIOUS';
       throw err;
     }
@@ -68,10 +89,25 @@ module.exports = (db) => {
       throw new ValidationError(`A leitura informada (${F.fmtNum(value)} ${meter.unit}) é maior que a leitura seguinte `
         + `já registrada (${F.fmtNum(next.value)} ${meter.unit} em ${F.fmtDate(next.reading_date)}). Confira o valor.`);
     }
+    // Consumo muito acima do normal: pede confirmação (possível erro de digitação).
+    const confirmed = body.confirm_high === true || body.confirm_high === '1';
+    if (prev && !occurrence && !confirmed) {
+      const cons = value - prev.value;
+      const days = F.diffDays(prev.reading_date, date);
+      const expected = expectedConsumption(meterId, date, days);
+      if (expected !== null && cons > expected * 3 && cons - expected >= 1) {
+        const err = new ValidationError(`O consumo calculado (${F.fmtNum(Math.round(cons * 10) / 10)} ${meter.unit} em ${Math.max(days, 1)} dia(s)) `
+          + `é muito maior que o normal para este medidor (cerca de ${F.fmtNum(Math.round(expected * 10) / 10)} ${meter.unit}). `
+          + 'Confira se não houve erro de digitação. Se o valor estiver correto, confirme para salvar.');
+        err.code = 'HIGH_CONSUMPTION';
+        throw err;
+      }
+    }
     return {
       meter, prev,
       data: {
-        meter_id: meterId, reading_date: date, reading_time: time, value, is_reset: isReset,
+        meter_id: meterId, reading_date: date, reading_time: time, value, is_reset: occurrence ? 1 : 0,
+        occurrence, occurrence_note: occurrence ? occurrenceNote : null,
         responsible: str(body.responsible, 120), notes: str(body.notes, 1000),
       },
     };
@@ -107,7 +143,8 @@ module.exports = (db) => {
         rows.push(row);
       }
       row.cells[rd.meter_id] = {
-        id: rd.id, value: rd.value, consumption: rd.consumption, is_reset: rd.is_reset,
+        id: rd.id, value: rd.value, consumption: rd.consumption, is_reset: rd.is_reset, occurrence: rd.occurrence,
+        closes_previous_month: rd.reading_date.slice(8) === '01',
         time: rd.reading_time, responsible: rd.responsible, notes: rd.notes,
       };
     }
@@ -129,15 +166,20 @@ module.exports = (db) => {
   r.post('/', (req, res) => {
     const { meter, data } = validate(req.body);
     const now = F.nowLocal();
-    const info = db.prepare(`INSERT INTO readings (meter_id,reading_date,reading_time,value,is_reset,responsible,notes,
-        created_by,updated_by,created_at,updated_at) VALUES (@meter_id,@reading_date,@reading_time,@value,@is_reset,@responsible,@notes,
-        @uid,@uid,@now,@now)`).run({ ...data, uid: req.user.id, now });
+    const info = db.transaction(() => {
+      const x = db.prepare(`INSERT INTO readings (meter_id,reading_date,reading_time,value,is_reset,occurrence,occurrence_note,responsible,notes,
+          created_by,updated_by,created_at,updated_at) VALUES (@meter_id,@reading_date,@reading_time,@value,@is_reset,@occurrence,@occurrence_note,
+          @responsible,@notes,@uid,@uid,@now,@now)`).run({ ...data, uid: req.user.id, now });
+      recalcMeter(db, data.meter_id);
+      return x;
+    })();
     const saved = getReading(db, info.lastInsertRowid);
     audit(db, req.user, { action: 'create', entity: 'reading', entityId: saved.id, condominiumId: meter.condominium_id,
       description: `${req.user.name} registrou a leitura de ${typeLower(meter)} (${meter.name}) do dia ${F.fmtDate(data.reading_date)} `
         + `às ${data.reading_time}: ${F.fmtNum(data.value)} ${meter.unit}`
         + `${saved.consumption !== null ? `, consumo de ${F.fmtNum(saved.consumption)} ${meter.unit}` : ''}`
-        + `${data.is_reset ? ' (medidor trocado/zerado)' : ''} — ${meter.condominium_name}.` });
+        + `${data.occurrence ? ` (ocorrência: ${S.OCCURRENCES[data.occurrence]} — ${data.occurrence_note})` : ''} — ${meter.condominium_name}.`,
+      details: { after: data } });
     res.status(201).json(saved);
   });
 
@@ -145,21 +187,27 @@ module.exports = (db) => {
     const before = getReading(db, req.params.id);
     if (!before) return res.status(404).json({ error: 'Leitura não encontrada.' });
     const { meter, data } = validate(req.body, before);
-    db.prepare(`UPDATE readings SET reading_date=@reading_date,reading_time=@reading_time,value=@value,is_reset=@is_reset,
-        responsible=@responsible,notes=@notes,updated_by=@uid,updated_at=@now WHERE id=@id`)
-      .run({ ...data, uid: req.user.id, now: F.nowLocal(), id: before.id });
+    db.transaction(() => {
+      db.prepare(`UPDATE readings SET reading_date=@reading_date,reading_time=@reading_time,value=@value,is_reset=@is_reset,
+          occurrence=@occurrence,occurrence_note=@occurrence_note,responsible=@responsible,notes=@notes,updated_by=@uid,updated_at=@now
+          WHERE id=@id`).run({ ...data, uid: req.user.id, now: F.nowLocal(), id: before.id });
+      recalcMeter(db, before.meter_id);
+    })();
 
     const parts = [];
     if (before.value !== data.value) parts.push(`de ${F.fmtNum(before.value)} para ${F.fmtNum(data.value)} ${meter.unit}`);
     if (before.reading_date !== data.reading_date) parts.push(`data de ${F.fmtDate(before.reading_date)} para ${F.fmtDate(data.reading_date)}`);
     if (before.reading_time !== data.reading_time) parts.push(`horário de ${before.reading_time} para ${data.reading_time}`);
     if ((before.responsible || '') !== (data.responsible || '')) parts.push(`responsável de "${before.responsible || '—'}" para "${data.responsible || '—'}"`);
-    if ((before.notes || '') !== (data.notes || '')) parts.push('observação');
-    if (before.is_reset !== data.is_reset) parts.push(data.is_reset ? 'marcou como medidor trocado/zerado' : 'desmarcou medidor trocado/zerado');
+    if ((before.notes || '') !== (data.notes || '')) parts.push(`observação de "${before.notes || '—'}" para "${data.notes || '—'}"`);
+    if ((before.occurrence || '') !== (data.occurrence || '') || (before.occurrence_note || '') !== (data.occurrence_note || '')) {
+      parts.push(data.occurrence ? `ocorrência: ${S.OCCURRENCES[data.occurrence]} — ${data.occurrence_note}` : 'removeu a ocorrência');
+    }
     if (parts.length) {
       audit(db, req.user, { action: 'update', entity: 'reading', entityId: before.id, condominiumId: meter.condominium_id,
         description: `${req.user.name} alterou a leitura de ${typeLower(meter)} do dia ${F.fmtDate(before.reading_date)} `
-          + `(${meter.condominium_name}): ${parts.join('; ')}.` });
+          + `(${meter.condominium_name}): ${parts.join('; ')}.`,
+        details: { before: pick(before), after: data } });
     }
     res.json(getReading(db, before.id));
   });
@@ -167,10 +215,13 @@ module.exports = (db) => {
   r.delete('/:id', requireAdmin, (req, res) => {
     const rd = getReading(db, req.params.id);
     if (!rd) return res.status(404).json({ error: 'Leitura não encontrada.' });
-    db.prepare('DELETE FROM readings WHERE id = ?').run(rd.id);
+    db.transaction(() => {
+      db.prepare('DELETE FROM readings WHERE id = ?').run(rd.id);
+      recalcMeter(db, rd.meter_id);
+    })();
     audit(db, req.user, { action: 'delete', entity: 'reading', entityId: rd.id, condominiumId: rd.condominium_id,
       description: `${req.user.name} excluiu a leitura de ${rd.type_name.toLowerCase()} do dia ${F.fmtDate(rd.reading_date)} `
-        + `(${F.fmtNum(rd.value)} ${rd.unit}) — ${rd.condominium_name}.` });
+        + `(${F.fmtNum(rd.value)} ${rd.unit}) — ${rd.condominium_name}.`, details: { before: pick(rd) } });
     res.json({ ok: true });
   });
 

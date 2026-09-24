@@ -78,7 +78,8 @@ export async function openUtilityForm(rec, { condominiumId = '', onSaved }) {
         <div class="field"><label for="uf-condo">Condomínio</label>${condoSelect(condos, { value: condominiumId, id: 'uf-condo' })}</div>
         <div class="field"><label for="uf-meter">Concessionária / medidor</label><select class="select" id="uf-meter" name="meter_id" disabled><option>Selecione o condomínio</option></select></div>`}
       <div class="form-row">
-        <div class="field"><label for="uf-date">Data da leitura</label><input class="input" type="date" id="uf-date" name="reading_date" value="${rec ? rec.reading_date : todayISO()}"></div>
+        <div class="field"><label for="uf-date">Data da leitura</label><input class="input" type="date" id="uf-date" name="reading_date" value="${rec ? rec.reading_date : todayISO()}" max="${todayISO()}">
+          <span class="hint">Data em que a concessionária fez a leitura.</span></div>
         <div class="field"><label for="uf-value">Leitura registrada</label><div class="input-group"><input class="input" id="uf-value" name="value" inputmode="decimal" value="${rec ? numInput(rec.value) : ''}" placeholder="opcional"><span class="addon" id="uf-unit">${rec ? rec.unit : ''}</span></div></div>
       </div>
       <div class="form-row">

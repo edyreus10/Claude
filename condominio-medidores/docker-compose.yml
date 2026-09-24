@@ -1,0 +1,15 @@
+# Uso: docker compose up -d   (os dados ficam na pasta ./dados do servidor)
+services:
+  medidores:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"   # exposto só localmente; o HTTPS fica no proxy (Caddy/Nginx)
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TRUST_PROXY: "1"
+      COOKIE_SECURE: "true"
+    volumes:
+      - ./dados:/data

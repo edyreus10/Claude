@@ -24,7 +24,7 @@ function shiftMonth(year, month, delta) {
 function buildClosing(db, condominiumId, year, month, compareMonths = 6) {
   const condo = db.prepare('SELECT * FROM condominiums WHERE id = ?').get(condominiumId);
   if (!condo) throw new ValidationError('Condomínio não encontrado.', 404);
-  const { from, to } = F.monthRange(year, month);
+  const { from, to, first } = F.closingRange(year, month);
   const meters = S.listMeters(db, { condominiumId });
   const savedRows = db.prepare(`SELECT mc.*, u.name AS closed_by_name FROM monthly_closings mc
       LEFT JOIN users u ON u.id = mc.closed_by WHERE mc.condominium_id = ? AND mc.year = ? AND mc.month = ?`).all(condominiumId, year, month);
@@ -33,7 +33,7 @@ function buildClosing(db, condominiumId, year, month, compareMonths = 6) {
   const history = [];
   for (let i = compareMonths; i >= 1; i--) history.push(shiftMonth(year, month, -i));
   const historyData = history.map((h) => {
-    const rng = F.monthRange(h.year, h.month);
+    const rng = F.closingRange(h.year, h.month);
     return { ...h, label: `${F.monthName(h.month).slice(0, 3)}/${h.year}`, map: S.consumptionByMeter(db, rng.from, rng.to, condominiumId) };
   });
 
@@ -57,14 +57,21 @@ function buildClosing(db, condominiumId, year, month, compareMonths = 6) {
       vs_average_pct: avg && cur.consumption !== null ? Math.round(((cur.consumption - avg) / avg) * 100) : null,
       vs_last_pct: last && last.consumption && cur.consumption !== null ? Math.round(((cur.consumption - last.consumption) / last.consumption) * 100) : null,
       saved: saved.get(m.id) || null,
+      // Leituras alteradas depois do fechamento gravado?
+      changed_since_closing: (() => {
+        const sv = saved.get(m.id);
+        if (!sv) return false;
+        return sv.consumption !== cur.consumption || sv.initial_value !== cur.initial_value || sv.final_value !== cur.final_value
+          || sv.initial_date !== cur.initial_date || sv.final_date !== cur.final_date;
+      })(),
     });
   }
   const dated = items.filter((i) => i.initial_date);
   const periodStart = dated.length ? dated.map((i) => i.initial_date).sort()[0] : null;
   const periodEnd = dated.length ? dated.map((i) => i.final_date).sort().pop() : null;
   return {
-    condominium: condo, year, month, month_name: F.monthName(month), from, to,
-    days_in_month: Number(to.slice(8)),
+    condominium: condo, year, month, month_name: F.monthName(month), from, to, first,
+    days_in_month: Number(F.monthRange(year, month).to.slice(8)),
     period_start: periodStart, period_end: periodEnd,
     period_days: periodStart ? F.diffDays(periodStart, periodEnd) : null,
     is_closed: savedRows.length > 0,
@@ -81,19 +88,21 @@ module.exports = (db) => {
   r.get('/dashboard', (req, res) => {
     const condominiumId = req.query.condominium_id ? Number(req.query.condominium_id) : null;
     const today = F.todayISO();
-    const { from, to } = F.monthRange(Number(today.slice(0, 4)), Number(today.slice(5, 7)));
+    const cal = F.monthRange(Number(today.slice(0, 4)), Number(today.slice(5, 7)));
+    // Consumo do mês pela regra de fechamento (02/MM até 01/MM+1).
+    const { from, to } = F.closingRange(Number(today.slice(0, 4)), Number(today.slice(5, 7)));
     const statuses = S.meterStatuses(db, { condominiumId, today });
     const condoWhere = condominiumId ? 'AND m.condominium_id = ?' : '';
     const condoParams = condominiumId ? [condominiumId] : [];
     const readingsMonth = db.prepare(`SELECT COUNT(*) n FROM readings r JOIN meters m ON m.id = r.meter_id
         JOIN condominiums c ON c.id = m.condominium_id WHERE r.reading_date BETWEEN ? AND ? AND c.status = 'active' ${condoWhere}`)
-      .get(from, to, ...condoParams).n;
+      .get(cal.from, cal.to, ...condoParams).n;
     const totalCondos = db.prepare(`SELECT COUNT(*) n FROM condominiums WHERE status = 'active' ${condominiumId ? 'AND id = ?' : ''}`)
       .get(...condoParams).n;
     const types = db.prepare('SELECT * FROM utility_types WHERE active = 1 ORDER BY sort_order').all();
     const cons = S.consumptionByType(db, from, to, condominiumId);
     const prev = shiftMonth(Number(today.slice(0, 4)), Number(today.slice(5, 7)), -1);
-    const prevRange = F.monthRange(prev.year, prev.month);
+    const prevRange = F.closingRange(prev.year, prev.month);
     const consPrev = S.consumptionByType(db, prevRange.from, prevRange.to, condominiumId);
 
     // Próximas leituras agrupadas por condomínio
@@ -170,10 +179,12 @@ module.exports = (db) => {
           final_date: i.final_date, final_value: i.final_value, consumption: i.consumption, days: i.days, notes, uid: req.user.id, now });
       }
     })();
-    const resume = withData.map((i) => `${i.type_name} ${F.fmtNum(i.consumption)} ${i.unit}`).join(', ');
+    const resume = withData.map((i) => `${i.type_name} — ${i.meter_name}: ${F.fmtNum(i.consumption)} ${i.unit}`).join('; ');
     audit(db, req.user, { action: c.is_closed ? 'update' : 'create', entity: 'monthly_closing', condominiumId,
       description: `${req.user.name} ${c.is_closed ? 'atualizou o fechamento' : 'fechou o mês'} de ${F.monthName(month)}/${year} do condomínio `
-        + `${c.condominium.name} (${resume}).` });
+        + `${c.condominium.name} (${resume}).`,
+      details: { items: withData.map((i) => ({ meter_id: i.meter_id, meter_name: i.meter_name, initial_date: i.initial_date,
+        initial_value: i.initial_value, final_date: i.final_date, final_value: i.final_value, consumption: i.consumption })) } });
     res.json(buildClosing(db, condominiumId, year, month));
   });
 

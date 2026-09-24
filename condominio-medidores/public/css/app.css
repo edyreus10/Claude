@@ -404,3 +404,41 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
   .report-paper { border: 0; box-shadow: none; padding: 0; }
   body { background: #fff; }
 }
+
+/* ------------------------------------------------------------ Ocorrências e registro */
+.occ-box { display: flex; flex-direction: column; gap: 12px; border: 1px solid #fde68a; background: #fffdf5; border-radius: 12px; padding: 14px; }
+.occ-box[hidden] { display: none; }
+.occ-options { border: 0; margin: 0; padding: 0; display: grid; gap: 8px; }
+.occ-options legend { margin-bottom: 6px; }
+.radio { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); cursor: pointer; }
+.radio:has(input:checked) { border-color: var(--primary); background: var(--primary-soft); }
+.radio input { width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--primary); flex-shrink: 0; }
+.radio span { display: flex; flex-direction: column; }
+.radio small { color: var(--muted); font-size: 13px; }
+.save-summary { display: flex; gap: 8px; align-items: center; font-size: 14px; color: var(--text-2); background: var(--surface-2); border-radius: 10px; padding: 10px 12px; }
+.save-summary:empty { display: none; }
+pre.json { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px; font-size: 12px; max-height: 50vh; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.table tr.row-initial td { background: #fafbfc; color: var(--text-2); }
+
+/* Histórico em cartões (celular) */
+.show-mobile-block { display: none; }
+.sheet-cards { padding: 8px; }
+.sheet-card { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; background: var(--surface); }
+.sc-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; font-size: 14px; }
+.sc-row { display: flex; align-items: center; gap: 10px; width: 100%; border: 0; background: transparent; padding: 8px 0; border-top: 1px solid var(--border); text-align: left; cursor: pointer; font: inherit; color: inherit; }
+.sc-row:first-of-type { border-top: 0; }
+.sc-name { flex: 1; min-width: 0; font-weight: 600; font-size: 14px; }
+.sc-val { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sc-cons { min-width: 64px; text-align: right; color: var(--primary); font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+@media (max-width: 640px) {
+  /* 16px evita o zoom automático do iPhone ao tocar nos campos */
+  .input, .select, .textarea { font-size: 16px; }
+  .input-lg { font-size: 26px; }
+  .show-mobile-block { display: block; }
+  .tabs { flex-wrap: wrap; border-bottom: 0; gap: 6px; }
+  .tabs a { border: 1px solid var(--border); border-radius: 999px; padding: 7px 12px; margin: 0; background: var(--surface); }
+  .tabs a.active { border-color: var(--primary); background: var(--primary-soft); }
+  .page-actions > div[style*="min-width"] { min-width: 0 !important; width: 100%; }
+  .closing-card .card-head { flex-wrap: wrap; }
+}

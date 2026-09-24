@@ -1,5 +1,5 @@
 // Inicialização, layout e navegação.
-import { api, setUnauthorizedHandler } from './api.js';
+import { api, setUnauthorizedHandler, setPasswordChangeHandler } from './api.js';
 import { html, mount, icon, $, $$, formData, withBusy, toast, initials } from './util.js';
 import { state, loadMeta, isAdmin } from './state.js';
 
@@ -36,7 +36,7 @@ const ROUTES = [
   [/^leituras\/concessionaria$/, utility, 'Leituras da concessionária'],
   [/^calendario$/, calendar, 'Calendário'],
   [/^relatorios(?:\/(fechamento|graficos|relatorio))?$/, reports, 'Relatórios'],
-  [/^configuracoes(?:\/(conta|usuarios|geral|auditoria))?$/, settings, 'Configurações'],
+  [/^configuracoes(?:\/(conta|usuarios|geral|backup|auditoria))?$/, settings, 'Configurações'],
 ];
 
 function parseHash() {
@@ -72,7 +72,7 @@ function renderLogin() {
       try {
         const { user } = await api.post('/api/auth/login', formData(form));
         state.user = user;
-        await loadMeta();
+        if (!user.must_change_password) await loadMeta();
         start();
       } catch (err) {
         mount($('#login-error'), html`<div class="alert alert-danger">${icon('circle-alert')}<div>${err.message}</div></div>`);
@@ -85,10 +85,10 @@ function renderForcePassword() {
   mount(app, html`<div class="login-page"><div class="card login-card">
     <div class="brand">${logo()}<div><h1>Crie uma nova senha</h1>
       <div class="brand-sub">Por segurança, troque a senha inicial antes de continuar.</div></div></div>
-    <form class="form" id="pw-form">
+    <form class="form" id="pw-form" novalidate>
       <div class="field"><label for="p-cur">Senha atual</label><input class="input" id="p-cur" name="current_password" type="password" autocomplete="current-password" required></div>
-      <div class="field"><label for="p-new">Nova senha</label><input class="input" id="p-new" name="new_password" type="password" autocomplete="new-password" minlength="6" required>
-        <span class="hint">Mínimo de 6 caracteres.</span></div>
+      <div class="field"><label for="p-new">Nova senha</label><input class="input" id="p-new" name="new_password" type="password" autocomplete="new-password" minlength="8" required>
+        <span class="hint">Mínimo de 8 caracteres.</span></div>
       <div class="field"><label for="p-new2">Repita a nova senha</label><input class="input" id="p-new2" name="new_password2" type="password" autocomplete="new-password" required></div>
       <div id="pw-error"></div>
       <button class="btn btn-primary btn-lg btn-block" type="submit">Salvar nova senha</button>
@@ -100,11 +100,13 @@ function renderForcePassword() {
     e.preventDefault();
     const d = formData(form);
     const showErr = (m) => mount($('#pw-error'), html`<div class="alert alert-danger">${icon('circle-alert')}<div>${m}</div></div>`);
+    if ((d.new_password || '').length < 8) return showErr('A nova senha deve ter pelo menos 8 caracteres.');
     if (d.new_password !== d.new_password2) return showErr('As senhas digitadas não são iguais.');
     withBusy($('button[type=submit]', form), async () => {
       try {
         await api.post('/api/auth/change-password', d);
         state.user.must_change_password = 0;
+        await loadMeta();
         toast('Senha alterada com sucesso.');
         start();
       } catch (err) { showErr(err.message); }
@@ -176,7 +178,7 @@ async function route() {
   $$('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.nav === top));
   $('#top-title').textContent = match.title;
   document.title = `${match.title} — ${state.meta.org_name}`;
-  $('#fab').hidden = !['dashboard', 'leituras', 'calendario'].includes(path);
+  $('#fab').hidden = !['dashboard', 'calendario'].includes(path);
 
   const page = $('#page');
   const seq = ++renderSeq;
@@ -206,6 +208,10 @@ export async function reloadMeta() {
   route();
 }
 
+setPasswordChangeHandler(() => {
+  if (state.user) { state.user.must_change_password = 1; renderForcePassword(); }
+});
+
 setUnauthorizedHandler(() => {
   if (state.user) { state.user = null; toast('Sua sessão expirou. Entre novamente.', 'error'); renderLogin(); }
 });
@@ -217,7 +223,7 @@ window.addEventListener('hashchange', route);
     const { user, org_name: orgName } = await api.get('/api/auth/me');
     state.user = user;
     state.meta = { org_name: orgName };
-    if (user) await loadMeta();
+    if (user && !user.must_change_password) await loadMeta();
   } catch { state.user = null; }
   if (state.user) start(); else renderLogin();
 })();

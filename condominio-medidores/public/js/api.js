@@ -5,7 +5,9 @@ export class ApiError extends Error {
 }
 
 let onUnauthorized = () => {};
+let onPasswordChange = () => {};
 export function setUnauthorizedHandler(fn) { onUnauthorized = fn; }
+export function setPasswordChangeHandler(fn) { onPasswordChange = fn; }
 
 async function request(method, url, body) {
   const opts = { method, headers: { 'X-Requested-With': 'fetch' }, credentials: 'same-origin' };
@@ -20,6 +22,7 @@ async function request(method, url, body) {
   const data = res.headers.get('content-type')?.includes('application/json') ? await res.json() : null;
   if (!res.ok) {
     if (res.status === 401 && !url.startsWith('/api/auth/login')) onUnauthorized();
+    if (res.status === 403 && data && data.code === 'PASSWORD_CHANGE_REQUIRED') onPasswordChange();
     throw new ApiError((data && data.error) || 'Ocorreu um erro. Tente novamente.', res.status, data && data.code);
   }
   return data;

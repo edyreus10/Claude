@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const { nowLocal } = require('./format');
 
 const COOKIE = 'cm_session';
-const SESSION_DAYS = 7;
+const SESSION_DAYS = Number(process.env.SESSION_DAYS) || 7;
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
@@ -14,24 +14,46 @@ function parseCookies(header) {
   for (const part of header.split(';')) {
     const i = part.indexOf('=');
     if (i < 0) continue;
-    out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    try { out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim()); } catch { /* cookie inválido */ }
   }
   return out;
 }
 
-function createSession(db, res, userId, secure) {
+/**
+ * Cookie "Secure" (só enviado por HTTPS):
+ *   COOKIE_SECURE=true  → sempre (servidor publicado com HTTPS)
+ *   COOKIE_SECURE=false → nunca (desenvolvimento local)
+ *   (padrão)            → automático, quando a requisição chegou por HTTPS
+ */
+function isSecure(req) {
+  const v = String(process.env.COOKIE_SECURE || 'auto').toLowerCase();
+  if (v === 'true' || v === '1') return true;
+  if (v === 'false' || v === '0') return false;
+  return !!req.secure;
+}
+
+function cookie(req, value, maxAge) {
+  return `${COOKIE}=${value}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${isSecure(req) ? '; Secure' : ''}`;
+}
+
+function createSession(db, req, res, userId) {
   const token = crypto.randomBytes(32).toString('hex');
   const expires = Date.now() + SESSION_DAYS * 86400000;
   db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now());
   db.prepare('INSERT INTO sessions (token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)')
     .run(sha256(token), userId, expires, nowLocal());
-  res.setHeader('Set-Cookie', `${COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_DAYS * 86400}${secure ? '; Secure' : ''}`);
+  res.setHeader('Set-Cookie', cookie(req, token, SESSION_DAYS * 86400));
 }
 
 function destroySession(db, req, res) {
   const token = parseCookies(req.headers.cookie)[COOKIE];
   if (token) db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha256(token));
-  res.setHeader('Set-Cookie', `${COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
+  res.setHeader('Set-Cookie', cookie(req, '', 0));
+}
+
+/** Encerra as outras sessões do usuário (ex.: depois de trocar a senha). */
+function destroyOtherSessions(db, req) {
+  db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').run(req.user.id, req.sessionHash || '');
 }
 
 /** Carrega req.user a partir do cookie de sessão. */
@@ -41,22 +63,34 @@ function loadUser(db) {
                            WHERE s.token_hash = ? AND s.expires_at > ? AND u.active = 1`);
   return (req, _res, next) => {
     const token = parseCookies(req.headers.cookie)[COOKIE];
-    req.user = token ? stmt.get(sha256(token), Date.now()) || null : null;
+    req.sessionHash = token ? sha256(token) : null;
+    req.user = token ? stmt.get(req.sessionHash, Date.now()) || null : null;
     next();
   };
 }
 
-function requireAuth(req, res, next) {
+/** Exige login (sem exigir a troca de senha — usado na própria troca de senha). */
+function requireLogin(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'Sua sessão expirou. Entre novamente.' });
   next();
 }
 
-function requireAdmin(req, res, next) {
+/** Exige login e que a senha provisória já tenha sido trocada. */
+function requireAuth(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'Sua sessão expirou. Entre novamente.' });
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Somente administradores podem realizar esta ação.' });
+  if (req.user.must_change_password) {
+    return res.status(403).json({ error: 'Troque a senha provisória antes de continuar.', code: 'PASSWORD_CHANGE_REQUIRED' });
   }
   next();
+}
+
+function requireAdmin(req, res, next) {
+  requireAuth(req, res, () => {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Somente administradores podem realizar esta ação.' });
+    }
+    next();
+  });
 }
 
 /**
@@ -71,20 +105,38 @@ function csrfGuard(req, res, next) {
   next();
 }
 
-/** Limite simples de tentativas de login (por IP). */
-const attempts = new Map();
+/**
+ * Limite de tentativas de login erradas.
+ * - por conta + endereço: 8 erros em 15 min bloqueiam só aquela conta naquele endereço
+ *   (outras pessoas na mesma rede continuam entrando);
+ * - por endereço: 40 erros em 15 min (tentativas em muitas contas).
+ */
+const WINDOW = 15 * 60000;
+const failures = new Map();
+function hit(key, now) {
+  const e = failures.get(key);
+  if (!e || now > e.reset) { failures.set(key, { count: 1, reset: now + WINDOW }); return 1; }
+  e.count++;
+  return e.count;
+}
+function blocked(key, limit, now) {
+  const e = failures.get(key);
+  return !!e && now <= e.reset && e.count >= limit;
+}
 function loginRateLimit(req, res, next) {
-  const key = req.ip;
   const now = Date.now();
-  const entry = attempts.get(key) || { count: 0, reset: now + 15 * 60000 };
-  if (now > entry.reset) { entry.count = 0; entry.reset = now + 15 * 60000; }
-  if (entry.count >= 10) {
-    return res.status(429).json({ error: 'Muitas tentativas. Aguarde alguns minutos e tente novamente.' });
+  if (failures.size > 10000) for (const [k, e] of failures) if (now > e.reset) failures.delete(k);
+  const email = String((req.body && req.body.email) || '').trim().toLowerCase();
+  const accountKey = `a:${req.ip}|${email}`;
+  const ipKey = `i:${req.ip}`;
+  if (blocked(accountKey, 8, now) || blocked(ipKey, 40, now)) {
+    return res.status(429).json({ error: 'Muitas tentativas erradas. Aguarde 15 minutos e tente novamente.' });
   }
-  entry.count++;
-  attempts.set(key, entry);
-  req.resetLoginAttempts = () => attempts.delete(key);
+  req.loginFailed = () => { hit(accountKey, now); hit(ipKey, now); };
+  req.loginSucceeded = () => { failures.delete(accountKey); };
   next();
 }
 
-module.exports = { createSession, destroySession, loadUser, requireAuth, requireAdmin, csrfGuard, loginRateLimit };
+module.exports = {
+  createSession, destroySession, destroyOtherSessions, loadUser, requireLogin, requireAuth, requireAdmin, csrfGuard, loginRateLimit,
+};

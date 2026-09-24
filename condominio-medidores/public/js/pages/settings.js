@@ -6,7 +6,7 @@ import { go, reloadMeta, refresh } from '../app.js';
 
 function tabs(active) {
   const t = [['conta', 'Minha conta', 'user']];
-  if (isAdmin()) t.push(['usuarios', 'Usuários', 'users'], ['geral', 'Geral', 'settings'], ['auditoria', 'Auditoria', 'file-clock']);
+  if (isAdmin()) t.push(['usuarios', 'Usuários', 'users'], ['geral', 'Geral', 'settings'], ['backup', 'Backup', 'database'], ['auditoria', 'Auditoria', 'file-clock']);
   return html`<div class="tabs">${t.map(([k, l, i]) => html`<a href="#/configuracoes/${k}" class="${k === active ? 'active' : ''}">${icon(i)} ${l}</a>`)}</div>`;
 }
 const head = () => html`<div class="page-head"><div><h1>Configurações</h1><p>Usuários, permissões e preferências do sistema.</p></div></div>`;
@@ -18,6 +18,7 @@ export async function render(el, ctx) {
   if (tab === 'usuarios') return renderUsers(el, ctx);
   if (tab === 'geral') return renderGeneral(el, ctx);
   if (tab === 'auditoria') return renderAudit(el, ctx);
+  if (tab === 'backup') return renderBackup(el, ctx);
   return renderAccount(el);
 }
 
@@ -28,7 +29,7 @@ function renderAccount(el) {
       <div class="card"><div class="card-head"><h2>${icon('lock')} Alterar senha</h2></div><div class="card-body">
         <form class="form" id="pw" novalidate>
           <div class="field"><label for="a-cur">Senha atual</label><input class="input" type="password" id="a-cur" name="current_password" autocomplete="current-password"></div>
-          <div class="field"><label for="a-new">Nova senha</label><input class="input" type="password" id="a-new" name="new_password" autocomplete="new-password"><span class="hint">Mínimo de 6 caracteres.</span></div>
+          <div class="field"><label for="a-new">Nova senha</label><input class="input" type="password" id="a-new" name="new_password" autocomplete="new-password"><span class="hint">Mínimo de 8 caracteres.</span></div>
           <div class="field"><label for="a-new2">Repita a nova senha</label><input class="input" type="password" id="a-new2" name="new_password2" autocomplete="new-password"></div>
           <div id="pw-err"></div>
           <div><button class="btn btn-primary" type="submit">${icon('save')} Salvar nova senha</button></div>
@@ -167,8 +168,37 @@ async function renderGeneral(el) {
   }));
 }
 
+// ---------------------------------------------------------------- Backup
+async function renderBackup(el, ctx) {
+  const d = await api.get('/api/backups');
+  if (!ctx.isCurrent()) return;
+  const size = (b) => (b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.ceil(b / 1e3)} KB`);
+  mount(el, html`${head()}${tabs('backup')}
+    <div class="card section"><div class="card-body">
+      <div class="alert alert-info">${icon('info')}<div>O sistema faz <b>um backup automático por dia</b> do banco de dados e guarda os 30 mais recentes.
+        Os comprovantes também são copiados. Para mais segurança, <b>baixe um backup regularmente</b> e guarde fora do servidor
+        (computador, pen drive ou nuvem).</div></div>
+      <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
+        <button class="btn btn-primary" id="bk-now">${icon('save')} Fazer backup agora</button>
+      </div>
+      <p class="small muted" style="margin-bottom:0">Pasta dos backups no servidor: <code>${d.dir}</code></p>
+    </div></div>
+    <div class="card">
+      ${d.backups.length ? html`<div class="table-wrap"><table class="table">
+        <thead><tr><th>Backup</th><th>Data</th><th class="num">Tamanho</th><th></th></tr></thead>
+        <tbody>${d.backups.map((b) => html`<tr><td class="small">${b.name}</td><td class="nowrap">${fmtDateTime(b.created_at)}</td>
+          <td class="num">${size(b.size)}</td>
+          <td class="actions"><a class="btn btn-sm" href="/api/backups/${b.name}" download>${icon('download')} Baixar</a></td></tr>`)}</tbody></table></div>`
+      : emptyState('database', 'Nenhum backup ainda', 'Clique em "Fazer backup agora".')}
+    </div>`);
+  $('#bk-now', el).addEventListener('click', () => withBusy($('#bk-now', el), async () => {
+    try { await api.post('/api/backups'); toast('Backup criado com sucesso.'); refresh(); } catch (err) { toast(err.message, 'error'); }
+  }));
+}
+
 // ---------------------------------------------------------------- Auditoria
-const ACTIONS = { create: ['Cadastro', 'b-green'], update: ['Alteração', 'b-yellow'], delete: ['Exclusão', 'b-red'], login: ['Acesso', 'b-gray'], export: ['Relatório', 'b-blue'] };
+const ACTIONS = { create: ['Cadastro', 'b-green'], update: ['Alteração', 'b-yellow'], delete: ['Exclusão', 'b-red'], login: ['Acesso', 'b-gray'],
+  login_failed: ['Senha incorreta', 'b-red'], export: ['Relatório/backup', 'b-blue'] };
 
 async function renderAudit(el, ctx) {
   const q = ctx.query.q || '';
@@ -190,7 +220,7 @@ async function renderAudit(el, ctx) {
         <tbody>${d.rows.map((r) => html`<tr>
           <td class="nowrap small">${fmtDateTime(r.created_at)}</td><td class="nowrap">${r.user_name || '—'}</td>
           <td><span class="badge ${(ACTIONS[r.action] || ['', 'b-gray'])[1]}">${(ACTIONS[r.action] || [r.action])[0]}</span></td>
-          <td>${r.description}</td></tr>`)}</tbody></table></div>
+          <td>${r.description}${r.has_details ? html` <button class="btn btn-ghost btn-sm" data-details="${r.id}">${icon('eye')} Detalhes</button>` : ''}</td></tr>`)}</tbody></table></div>
         <div class="card-body" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
           <span class="small muted">${d.total} registro(s) · página ${d.page} de ${d.pages}</span>
           <div style="display:flex;gap:8px">
@@ -199,6 +229,13 @@ async function renderAudit(el, ctx) {
           </div></div>`
       : emptyState('file-clock', 'Nenhum registro encontrado', 'Ajuste os filtros da busca.')}
     </div>`);
+  $$('[data-details]', el).forEach((b) => b.addEventListener('click', async () => {
+    const a = await api.get(`/api/audit/${b.dataset.details}`);
+    openModal({ title: 'Detalhes do registro', wide: true,
+      body: html`<p style="margin-top:0">${a.description}</p><p class="small muted">${fmtDateTime(a.created_at)} · ${a.user_name || '—'}</p>
+        <pre class="json">${JSON.stringify(a.details, null, 2)}</pre>`,
+      footer: html`<button class="btn" data-close>Fechar</button>` });
+  }));
   $('#af', el).addEventListener('submit', (e) => {
     e.preventDefault();
     go(`configuracoes/auditoria?${new URLSearchParams({ q: $('#a-q', el).value, acao: $('#a-act', el).value })}`);

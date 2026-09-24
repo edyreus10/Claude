@@ -4,6 +4,7 @@ import { html, mount, icon, $, $$, fmtNum, fmtDate, fmtDateTime, capital, pref, 
 import { state, getCondos, currentCondo, isAdmin, activeTypes } from '../state.js';
 import { condoSelect, typeDot } from '../components.js';
 import { go, refresh, logo } from '../app.js';
+import { occurrenceLabel } from './new-reading.js';
 
 const charts = [];
 function destroyCharts() { while (charts.length) charts.pop().destroy(); }
@@ -70,7 +71,7 @@ async function renderClosing(el, ctx, condos) {
   if (!ctx.isCurrent()) return;
   const admin = isAdmin();
   const withData = c.items.filter((i) => i.readings_count);
-  const changed = c.is_closed && c.items.some((i) => i.saved && i.saved.consumption !== i.consumption);
+  const changed = c.is_closed && c.items.some((i) => i.changed_since_closing);
 
   const trend = (v, label) => (v === null || v === undefined ? '' : html`<span><span class="${v > 0 ? 'trend-up' : v < 0 ? 'trend-down' : ''}">${pct(v)}</span> ${label}</span>`);
 
@@ -85,6 +86,8 @@ async function renderClosing(el, ctx, condos) {
         <div style="font-size:18px;font-weight:700">${c.condominium.name} — ${capital(c.month_name)} de ${c.year}</div>
         <div class="muted">${c.period_start ? html`Período das leituras: <b>${fmtDate(c.period_start)}</b> a <b>${fmtDate(c.period_end)}</b> · <b>${c.period_days} dias</b>` : 'Sem leituras neste mês.'}
           · Mês com ${c.days_in_month} dias</div>
+        <div class="small muted" style="margin-top:4px">${icon('info', 'small')} Regra: a leitura do dia 01 fecha o mês anterior e é a leitura inicial do mês.
+          O consumo do mês vai da leitura inicial até a leitura do dia 01 do mês seguinte (ou a última leitura registrada).</div>
       </div>
       <div class="page-actions">
         ${c.is_closed ? html`<span class="badge b-green">${icon('lock')} Mês fechado em ${fmtDateTime(c.closed_at)}${c.closed_by_name ? ` por ${c.closed_by_name}` : ''}</span>` : html`<span class="badge b-yellow">Mês em aberto</span>`}
@@ -109,7 +112,8 @@ async function renderClosing(el, ctx, condos) {
             ${trend(i.vs_average_pct, 'vs. média')}
             ${trend(i.vs_last_pct, 'vs. mês anterior')}
           </div>
-          ${i.has_reset ? html`<div class="small muted" style="margin-top:6px">${icon('info', 'small')} Houve troca/zeramento do medidor neste mês.</div>` : ''}`
+          ${i.has_reset ? html`<div class="small muted" style="margin-top:6px">${icon('info', 'small')} Houve ocorrência (troca, zeramento ou correção) neste mês: o consumo não é "final − inicial".</div>` : ''}
+          ${i.changed_since_closing ? html`<div class="small" style="margin-top:6px;color:var(--warning)">${icon('triangle-alert', 'small')} Diferente do fechamento gravado (${fmtNum(i.saved.consumption)} ${i.unit}).</div>` : ''}`
           : html`<div class="muted">Nenhuma leitura neste mês.</div>`}
         </div>
       </div>`)}
@@ -238,11 +242,13 @@ async function renderReport(el, ctx, condos) {
       <h3 style="font-size:15px;margin-bottom:8px">Leituras do período</h3>
       ${rep.rows.length ? html`<div class="table-wrap"><table class="table">
         <thead><tr><th>Data</th><th>Medidor</th><th class="num">Leitura</th><th class="num">Consumo</th><th>Responsável</th></tr></thead>
-        <tbody>${rep.rows.map((r) => html`<tr>
-          <td class="nowrap">${fmtDate(r.reading_date)} <span class="muted small">${r.weekday}</span></td>
+        <tbody>${rep.rows.map((r) => html`<tr class="${r.role === 'inicial' ? 'row-initial' : ''}">
+          <td class="nowrap">${fmtDate(r.reading_date)} <span class="muted small">${r.weekday}</span>
+            ${r.role === 'inicial' ? html`<div><span class="badge b-gray">leitura inicial</span></div>` : r.role === 'fechamento' ? html`<div><span class="badge b-blue">fechamento</span></div>` : ''}</td>
           <td>${r.type_name} — ${r.meter_name}</td>
           <td class="num">${fmtNum(r.value)} ${r.unit}</td>
-          <td class="num cons">${r.is_reset ? 'troca' : r.consumption !== null ? `${fmtNum(r.consumption)} ${r.unit}` : '—'}</td>
+          <td class="num cons">${r.role === 'inicial' ? html`<span class="muted small" title="Consumo pertence ao mês anterior">mês anterior</span>`
+            : r.occurrence ? html`<span class="badge b-yellow">${occurrenceLabel(r.occurrence)}</span>` : r.consumption !== null ? `${fmtNum(r.consumption)} ${r.unit}` : '—'}</td>
           <td>${r.responsible || '—'}</td></tr>`)}</tbody>
       </table></div>` : html`<p class="muted">Nenhuma leitura registrada no período.</p>`}
 
@@ -250,6 +256,7 @@ async function renderReport(el, ctx, condos) {
         <h3>CONSUMO TOTAL DO PERÍODO</h3>
         ${rep.totals.length ? rep.totals.map((t) => html`<div class="row"><span>${t.type_name}</span><b>${fmtNum(t.consumption)} ${t.unit}</b></div>`) : html`<div class="muted">Sem consumo no período.</div>`}
       </div>
+      <p class="small muted">A leitura do dia 01 fecha o mês anterior e é a leitura inicial do mês: o consumo dela pertence ao mês anterior e não entra no total.</p>
       ${rep.totals.some((t) => t.area_consumption) ? html`<p class="small muted">O total considera os medidores principais. Medidores de áreas específicas aparecem no resumo.</p>` : ''}
     </div>`);
 

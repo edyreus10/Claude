@@ -66,6 +66,23 @@ function monthRange(year, month) {
   return { from: `${year}-${pad(month)}-01`, to: `${year}-${pad(month)}-${pad(last)}` };
 }
 
+/**
+ * Período de apuração de um mês (regra da planilha):
+ * a leitura do dia 01 FECHA o mês anterior e é a leitura INICIAL do mês.
+ * Por isso o consumo de um mês é o das leituras de 02/MM até 01/(MM+1).
+ *   month = 0 → ano inteiro (02/01 até 01/01 do ano seguinte).
+ */
+function closingRange(year, month) {
+  if (!month) return { from: `${year}-01-02`, to: `${year + 1}-01-01`, first: `${year}-01-01` };
+  const next = month === 12 ? `${year + 1}-01-01` : `${year}-${pad(month + 1)}-01`;
+  return { from: `${year}-${pad(month)}-02`, to: next, first: `${year}-${pad(month)}-01` };
+}
+
+/** Mês (AAAA-MM) ao qual o consumo de uma leitura pertence. */
+function billingMonth(iso) {
+  return addDays(iso, -1).slice(0, 7);
+}
+
 function isValidISODate(s) {
   if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
   return isoFromDate(parseISODate(s)) === s;
@@ -77,5 +94,5 @@ function isValidTime(s) {
 
 module.exports = {
   WEEKDAYS, MONTHS, pad, nowLocal, todayISO, parseISODate, addDays, diffDays, weekday,
-  fmtDate, fmtDateTime, fmtNum, monthName, monthRange, isValidISODate, isValidTime,
+  fmtDate, fmtDateTime, fmtNum, monthName, monthRange, closingRange, billingMonth, isValidISODate, isValidTime,
 };

@@ -96,7 +96,8 @@ export async function openMeterForm(meter, { condominiumId = '', onSaved }) {
         <div class="field"><label for="mf-id">Número / identificação</label><input class="input" id="mf-id" name="identifier" value="${v.identifier || ''}"></div>
       </div>
       <div class="form-row">
-        <div class="field"><label for="mf-unit">Unidade de medida</label><input class="input" id="mf-unit" name="unit" value="${v.unit || typeInfo(v.utility_type).unit}"></div>
+        <div class="field"><label for="mf-unit">Unidade de medida</label><input class="input" id="mf-unit" name="unit" value="${v.unit || typeInfo(v.utility_type).unit}" ${hasReadings ? 'readonly' : ''}>
+          ${hasReadings ? html`<span class="hint">Não pode ser alterada: o medidor já tem leituras.</span>` : ''}</div>
         <div class="field"><label for="mf-kind">Tipo</label><select class="select" id="mf-kind" name="kind">
           <option value="principal" ${v.kind === 'principal' ? 'selected' : ''}>Principal</option>
           <option value="area" ${v.kind === 'area' ? 'selected' : ''}>Área específica</option></select></div>
@@ -117,6 +118,20 @@ export async function openMeterForm(meter, { condominiumId = '', onSaved }) {
     footer: html`<button class="btn" data-close>Cancelar</button><button class="btn btn-primary" id="meter-save">${icon('save')} Salvar</button>`,
   });
   const form = $('#meter-form', m.el);
+  if (!meter) {
+    // Frequência padrão do condomínio escolhido.
+    const applyFreq = () => {
+      const c = condos.find((x) => x.id === Number($('#mf-condo', m.el).value));
+      const sel = $('#mf-freq', m.el);
+      if (!c || !c.default_frequency_days) return;
+      if (![...sel.options].some((o) => Number(o.value) === c.default_frequency_days)) {
+        sel.add(new Option(`A cada ${c.default_frequency_days} dias`, c.default_frequency_days));
+      }
+      sel.value = String(c.default_frequency_days);
+    };
+    $('#mf-condo', m.el).addEventListener('change', applyFreq);
+    applyFreq();
+  }
   $$('#mf-types button', m.el).forEach((b) => b.addEventListener('click', () => {
     $$('#mf-types button', m.el).forEach((x) => x.classList.toggle('active', x === b));
     const prevType = form.utility_type.value;
@@ -130,6 +145,7 @@ export async function openMeterForm(meter, { condominiumId = '', onSaved }) {
       if (meter) d.active = !!d.active;
       const saved = meter ? await api.put(`/api/meters/${meter.id}`, d) : await api.post('/api/meters', d);
       invalidateCondos();
+      currentCondo.set(saved.condominium_id); // mostra o medidor salvo na lista do condomínio dele
       m.close();
       toast(meter ? 'Medidor atualizado.' : 'Medidor cadastrado com sucesso.');
       onSaved(saved);

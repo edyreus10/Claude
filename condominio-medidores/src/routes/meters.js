@@ -16,7 +16,8 @@ const kindLabel = (k) => (k === 'area' ? 'Área específica' : 'Principal');
 function readBody(db, body) {
   const type = db.prepare('SELECT * FROM utility_types WHERE code = ?').get(body.utility_type);
   if (!type) throw new ValidationError('Selecione o tipo de medidor (Água, Gás, Energia...).');
-  const freq = number(body.frequency_days, 'Frequência de leitura', { min: 1 }) || 7;
+  const freq = number(body.frequency_days, 'Frequência de leitura', { min: 1 })
+    || (db.prepare('SELECT default_frequency_days d FROM condominiums WHERE id = ?').get(Number(body.condominium_id)) || {}).d || 7;
   if (freq > 366 || !Number.isInteger(freq)) throw new ValidationError('A frequência de leitura deve ser um número de dias entre 1 e 366.');
   return {
     condominium_id: id(body.condominium_id, 'condomínio'),
@@ -80,9 +81,13 @@ module.exports = (db) => {
     const before = S.getMeter(db, req.params.id);
     if (!before) return res.status(404).json({ error: 'Medidor não encontrado.' });
     const d = readBody(db, { ...req.body, condominium_id: before.condominium_id });
-    if (d.utility_type !== before.utility_type) {
-      const n = db.prepare('SELECT COUNT(*) n FROM readings WHERE meter_id = ?').get(before.id).n;
-      if (n) throw new ValidationError('Não é possível trocar o tipo de um medidor que já possui leituras.');
+    const n = db.prepare('SELECT COUNT(*) n FROM readings WHERE meter_id = ?').get(before.id).n;
+    if (n && d.utility_type !== before.utility_type) {
+      throw new ValidationError('Não é possível trocar o tipo de um medidor que já possui leituras.');
+    }
+    if (n && d.unit !== before.unit) {
+      throw new ValidationError(`Não é possível trocar a unidade de um medidor que já possui leituras (as ${n} leituras estão em ${before.unit}). `
+        + 'Se o medidor foi substituído, cadastre um novo medidor e inative o antigo.');
     }
     db.prepare(`UPDATE meters SET utility_type=@utility_type,name=@name,identifier=@identifier,unit=@unit,location=@location,
         utility_company=@utility_company,kind=@kind,frequency_days=@frequency_days,notes=@notes,active=@active,updated_at=@now
@@ -99,10 +104,15 @@ module.exports = (db) => {
     const m = S.getMeter(db, req.params.id);
     if (!m) return res.status(404).json({ error: 'Medidor não encontrado.' });
     const n = db.prepare('SELECT COUNT(*) n FROM readings WHERE meter_id = ?').get(m.id).n;
+    const snapshot = {
+      meter: m,
+      readings: db.prepare('SELECT reading_date, reading_time, value, consumption, occurrence, responsible, notes FROM readings WHERE meter_id = ?').all(m.id),
+      utility_readings: db.prepare('SELECT reading_date, value, company, next_reading_date, notes FROM utility_company_readings WHERE meter_id = ?').all(m.id),
+    };
     removeAttachmentsWhere(db, 'm.id = ?', m.id);
     db.prepare('DELETE FROM meters WHERE id = ?').run(m.id);
     audit(db, req.user, { action: 'delete', entity: 'meter', entityId: m.id, condominiumId: m.condominium_id,
-      description: `${req.user.name} excluiu o medidor "${m.name}" do condomínio ${m.condominium_name} (com ${n} leitura(s)).` });
+      description: `${req.user.name} excluiu o medidor "${m.name}" do condomínio ${m.condominium_name} (com ${n} leitura(s)).`, details: snapshot });
     res.json({ ok: true });
   });
 

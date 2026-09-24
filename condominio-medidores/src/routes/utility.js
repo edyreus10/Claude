@@ -46,6 +46,9 @@ module.exports = (db) => {
     if (!meter) throw new ValidationError('Medidor não encontrado.');
     const date = String(body.reading_date || '');
     if (!F.isValidISODate(date)) throw new ValidationError('Informe a data da leitura da concessionária.');
+    if (date > F.todayISO()) {
+      throw new ValidationError('A data da leitura realizada não pode ser no futuro. Para uma leitura agendada, use "Próxima leitura prevista".');
+    }
     const nextDate = body.next_reading_date ? String(body.next_reading_date) : null;
     if (nextDate && !F.isValidISODate(nextDate)) throw new ValidationError('A data da próxima leitura não é válida.');
     if (nextDate && nextDate <= date) throw new ValidationError('A próxima leitura deve ser depois da data da leitura.');

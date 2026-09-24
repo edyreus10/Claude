@@ -18,7 +18,8 @@ function buildReport(db, q, user) {
   const month = Number(q.month || 0);
   if (!Number.isInteger(year) || year < 2000 || year > 2100) throw new ValidationError('Selecione o ano.');
   if (!Number.isInteger(month) || month < 0 || month > 12) throw new ValidationError('Selecione o mês.');
-  const range = month ? F.monthRange(year, month) : { from: `${year}-01-01`, to: `${year}-12-31` };
+  // Regra da planilha: a leitura do dia 01 fecha o mês anterior e é a inicial do mês.
+  const range = F.closingRange(year, month);
   const periodLabel = month ? `${F.monthName(month)} de ${year}` : `ano de ${year}`;
 
   let type = null;
@@ -26,18 +27,32 @@ function buildReport(db, q, user) {
     type = db.prepare('SELECT * FROM utility_types WHERE code = ?').get(q.utility_type);
     if (!type) throw new ValidationError('Concessionária/tipo inválido.');
   }
-  const params = [condominiumId, range.from, range.to];
-  let extra = '';
-  if (type) { extra = 'AND m.utility_type = ?'; params.push(type.code); }
-  const rows = db.prepare(`${READING_SELECT} WHERE m.condominium_id = ? AND v.reading_date BETWEEN ? AND ? ${extra}
-      ORDER BY v.reading_date, v.reading_time, t.sort_order, m.name`).all(...params)
-    .map((x) => ({ ...x, weekday: F.weekday(x.reading_date) }));
-
   const meters = S.listMeters(db, { condominiumId }).filter((m) => !type || m.utility_type === type.code);
   const summary = meters.map((m) => ({ meter_id: m.id, meter_name: m.name, identifier: m.identifier, kind: m.kind,
     type_name: m.type_name, utility_type: m.utility_type, unit: m.unit, type_color: m.type_color,
     ...S.closingForMeter(db, m.id, range.from, range.to) }))
     .filter((s) => s.readings_count > 0);
+
+  // Leituras exibidas: a leitura inicial de cada medidor + as leituras do período.
+  // A leitura inicial (normalmente a do dia 01) aparece como referência e o
+  // consumo dela pertence ao mês anterior (não entra no total).
+  const params = [condominiumId, range.from, range.to];
+  let extra = '';
+  if (type) { extra = 'AND m.utility_type = ?'; params.push(type.code); }
+  const inPeriod = db.prepare(`${READING_SELECT} WHERE m.condominium_id = ? AND v.reading_date BETWEEN ? AND ? ${extra}
+      ORDER BY v.reading_date, v.reading_time, t.sort_order, m.name`).all(...params)
+    .map((x) => ({ ...x, role: x.reading_date === range.to ? 'fechamento' : 'periodo', counted: true }));
+  const initials = [];
+  const initStmt = db.prepare(`${READING_SELECT} WHERE v.meter_id = ? AND v.reading_date = ? AND v.value = ?
+      ORDER BY v.reading_time DESC LIMIT 1`);
+  for (const sm of summary) {
+    if (!sm.initial_date || sm.initial_date >= range.from) continue;
+    const r = initStmt.get(sm.meter_id, sm.initial_date, sm.initial_value);
+    if (r) initials.push({ ...r, role: 'inicial', counted: false });
+  }
+  const rows = [...initials, ...inPeriod]
+    .sort((a, b) => (a.reading_date + a.reading_time + a.type_order).localeCompare(b.reading_date + b.reading_time + b.type_order))
+    .map((x) => ({ ...x, weekday: F.weekday(x.reading_date) }));
 
   // Total por tipo: soma dos medidores principais (os de área são submedições).
   const totals = [];
@@ -52,8 +67,8 @@ function buildReport(db, q, user) {
   const settings = getSettings(db);
   return {
     org_name: settings.org_name, logo_file: settings.logo_file || null,
-    condominium: condo, year, month, from: range.from, to: range.to, period_label: periodLabel,
-    period_days: F.diffDays(range.from, range.to) + 1,
+    condominium: condo, year, month, from: range.from, to: range.to, first: range.first, period_label: periodLabel,
+    period_days: F.diffDays(range.first, range.to),
     utility_type: type ? type.code : null, utility_name: type ? type.name : 'Todas',
     rows, summary, totals,
     generated_at: F.nowLocal(), generated_by: user ? user.name : '',
@@ -66,11 +81,22 @@ function fileBase(rep) {
 }
 
 const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const OCC = { troca: 'troca do medidor', zeramento: 'zeramento', correcao: 'correção de leitura', outra: 'outra ocorrência' };
+/** Situação da linha no relatório (leitura inicial, fechamento, ocorrência). */
+function rowSituation(r) {
+  const parts = [];
+  if (r.role === 'inicial') parts.push('Leitura inicial (consumo do mês anterior)');
+  if (r.role === 'fechamento') parts.push('Leitura de fechamento');
+  if (r.occurrence) parts.push(`Ocorrência: ${OCC[r.occurrence]}${r.occurrence_note ? ` — ${r.occurrence_note}` : ''}`);
+  return parts.join(' · ');
+}
 
 // ---------------------------------------------------------------- CSV
 function toCSV(rep) {
+  // Textos que começam com = + - @ viram fórmula no Excel: são prefixados com apóstrofo.
   const esc = (v) => {
-    const s = v === null || v === undefined ? '' : String(v);
+    let s = v === null || v === undefined ? '' : String(v);
+    if (typeof v === 'string' && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
     return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const num = (v) => (v === null || v === undefined ? '' : String(v).replace('.', ','));
@@ -79,10 +105,10 @@ function toCSV(rep) {
   lines.push(['Período', capital(rep.period_label)].map(esc).join(';'));
   lines.push(['Concessionária', rep.utility_name].map(esc).join(';'));
   lines.push('');
-  lines.push(['Data', 'Dia', 'Horário', 'Tipo', 'Medidor', 'Leitura', 'Consumo', 'Unidade', 'Responsável', 'Observação'].join(';'));
+  lines.push(['Data', 'Dia', 'Horário', 'Tipo', 'Medidor', 'Leitura', 'Consumo', 'Unidade', 'Situação', 'Responsável', 'Observação'].join(';'));
   for (const r of rep.rows) {
     lines.push([F.fmtDate(r.reading_date), r.weekday, r.reading_time, r.type_name, r.meter_name, num(r.value),
-      num(r.consumption), r.unit, r.responsible || '', r.notes || ''].map(esc).join(';'));
+      r.counted ? num(r.consumption) : '', r.unit, rowSituation(r), r.responsible || '', r.notes || ''].map(esc).join(';'));
   }
   lines.push('');
   lines.push(['Resumo por medidor', '', 'Leitura inicial', 'Data inicial', 'Leitura final', 'Data final', 'Consumo', 'Unidade', 'Dias'].join(';'));
@@ -102,19 +128,19 @@ async function toXLSX(rep) {
   wb.created = new Date();
   const ws = wb.addWorksheet('Leituras', { views: [{ state: 'frozen', ySplit: 6 }], pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1 } });
   ws.columns = [
-    { width: 12 }, { width: 10 }, { width: 9 }, { width: 18 }, { width: 26 }, { width: 14 }, { width: 13 }, { width: 8 }, { width: 20 }, { width: 34 },
+    { width: 12 }, { width: 10 }, { width: 9 }, { width: 18 }, { width: 26 }, { width: 14 }, { width: 13 }, { width: 8 }, { width: 20 }, { width: 34 }, { width: 36 },
   ];
   const brand = 'FF0F766E';
-  ws.mergeCells('A1:J1');
+  ws.mergeCells('A1:K1');
   ws.getCell('A1').value = `${rep.condominium.name} — Relatório de leituras e consumo`;
   ws.getCell('A1').font = { size: 15, bold: true, color: { argb: brand } };
   ws.getCell('A2').value = `Período: ${capital(rep.period_label)}   ·   Concessionária: ${rep.utility_name}`;
-  ws.mergeCells('A2:J2');
+  ws.mergeCells('A2:K2');
   ws.getCell('A3').value = `Gerado em ${F.fmtDateTime(rep.generated_at)} por ${rep.generated_by}   ·   ${rep.org_name}`;
-  ws.mergeCells('A3:J3');
+  ws.mergeCells('A3:K3');
   ws.getCell('A3').font = { size: 9, color: { argb: 'FF64748B' } };
 
-  const header = ['Data', 'Dia', 'Horário', 'Tipo', 'Medidor', 'Leitura', 'Consumo', 'Unid.', 'Responsável', 'Observação'];
+  const header = ['Data', 'Dia', 'Horário', 'Tipo', 'Medidor', 'Leitura', 'Consumo', 'Unid.', 'Responsável', 'Observação', 'Situação'];
   const hr = ws.getRow(6);
   hr.values = header;
   hr.eachCell((c) => {
@@ -127,13 +153,13 @@ async function toXLSX(rep) {
   for (const r of rep.rows) {
     const row = ws.getRow(rowIdx++);
     row.values = [F.parseISODate(r.reading_date), r.weekday, r.reading_time, r.type_name, r.meter_name, r.value,
-      r.consumption, r.unit, r.responsible || '', r.notes || ''];
+      r.counted ? r.consumption : null, r.unit, r.responsible || '', r.notes || '', rowSituation(r)];
     row.getCell(1).numFmt = 'dd/mm/yyyy';
     row.getCell(6).numFmt = '#,##0.0##';
     row.getCell(7).numFmt = '#,##0.0##';
     if (rowIdx % 2 === 0) row.eachCell({ includeEmpty: true }, (c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } }; });
   }
-  if (rep.rows.length) ws.autoFilter = { from: 'A6', to: `J${rowIdx - 1}` };
+  if (rep.rows.length) ws.autoFilter = { from: 'A6', to: `K${rowIdx - 1}` };
   rowIdx++;
   for (const t of rep.totals) {
     const row = ws.getRow(rowIdx++);
@@ -248,17 +274,26 @@ function toPDF(rep) {
       }
       drawHeader();
       data.forEach((row, idx) => {
-        ensure(rowH);
-        if (idx % 2 === 1) doc.rect(L, y, W, rowH).fill(C.zebra);
+        // Altura da linha: até 2 linhas de texto por célula (nomes longos não são cortados).
+        doc.font('Helvetica').fontSize(8.5);
+        let textH = 11;
+        for (const c of cols) {
+          const v = row[c.key];
+          const h = doc.heightOfString(v === null || v === undefined ? '—' : String(v), { width: c.w - 10 });
+          textH = Math.max(textH, Math.min(h, 22));
+        }
+        const rh = Math.max(rowH, textH + 8);
+        ensure(rh);
+        if (idx % 2 === 1) doc.rect(L, y, W, rh).fill(C.zebra);
         let x = L;
         for (const c of cols) {
           const v = row[c.key];
-          doc.font(c.bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(8.5).fillColor(c.color ? c.color(row) : C.text)
-            .text(v === null || v === undefined ? '—' : String(v), x + 5, y + 5, { width: c.w - 10, height: 11, align: c.align || 'left', ellipsis: true });
+          doc.font(c.bold && !row._muted ? 'Helvetica-Bold' : 'Helvetica').fontSize(8.5).fillColor(row._muted && c.key === 'consumption' ? C.muted : (c.color ? c.color(row) : C.text))
+            .text(v === null || v === undefined ? '—' : String(v), x + 5, y + 5, { width: c.w - 10, height: 22, align: c.align || 'left', ellipsis: true });
           x += c.w;
         }
-        doc.moveTo(L, y + rowH).lineTo(L + W, y + rowH).lineWidth(0.5).stroke(C.line);
-        y += rowH;
+        doc.moveTo(L, y + rh).lineTo(L + W, y + rh).lineWidth(0.5).stroke(C.line);
+        y += rh;
       });
       if (!data.length) {
         doc.font('Helvetica-Oblique').fontSize(9).fillColor(C.muted).text('Nenhuma leitura registrada no período.', L + 5, y + 6);
@@ -292,8 +327,13 @@ function toPDF(rep) {
       { key: 'responsible', label: 'RESPONSÁVEL', w: W * 0.15 },
     ], rep.rows.map((r) => ({
       date: F.fmtDate(r.reading_date), weekday: r.weekday, meter: `${r.type_name} — ${r.meter_name}`,
-      value: u(r.value, r.unit), consumption: r.is_reset ? 'troca' : u(r.consumption, r.unit), time: r.reading_time, responsible: r.responsible,
+      value: u(r.value, r.unit),
+      consumption: r.role === 'inicial' ? 'leitura inicial' : r.occurrence ? ({ troca: 'troca', zeramento: 'zeramento', correcao: 'correção', outra: 'ocorrência' })[r.occurrence] : u(r.consumption, r.unit),
+      time: r.reading_time, responsible: r.responsible, _muted: r.role === 'inicial' || !!r.occurrence,
     })));
+    doc.font('Helvetica-Oblique').fontSize(7.5).fillColor(C.muted)
+      .text('A leitura do dia 01 fecha o mês anterior e é a leitura inicial do mês: o consumo dela pertence ao mês anterior e não entra no total.', L, y - 10, { width: W });
+    y += 6;
 
     // Consumo total do período
     const boxH = 30 + rep.totals.length * 20;

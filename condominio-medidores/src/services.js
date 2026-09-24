@@ -108,7 +108,11 @@ function consumptionByType(db, from, to, condominiumId) {
       GROUP BY m.utility_type ORDER BY t.sort_order`).all(...params);
 }
 
-/** Fechamento de um medidor em um período. */
+/**
+ * Fechamento de um medidor em um período de apuração (from..to).
+ * Use closingForMonth para meses: o período vai de 02/MM a 01/(MM+1), pois a
+ * leitura do dia 01 fecha o mês anterior e é a leitura inicial do mês.
+ */
 function closingForMeter(db, meterId, from, to) {
   const rows = db.prepare(`SELECT * FROM v_readings WHERE meter_id = ? AND reading_date BETWEEN ? AND ?
                            ORDER BY reading_date, reading_time, id`).all(meterId, from, to);
@@ -118,8 +122,8 @@ function closingForMeter(db, meterId, from, to) {
   }
   const first = rows[0];
   const last = rows[rows.length - 1];
-  // A leitura inicial é a última leitura antes do período (o consumo da
-  // primeira leitura do mês começa a contar a partir dela).
+  // Leitura inicial = leitura imediatamente anterior ao período (normalmente a
+  // do dia 01). O consumo da primeira leitura do período começa a contar dela.
   const usePrev = first.prev_value !== null && !first.is_reset;
   const initialDate = usePrev ? first.prev_date : first.reading_date;
   const initialValue = usePrev ? first.prev_value : first.value;
@@ -135,6 +139,12 @@ function closingForMeter(db, meterId, from, to) {
   };
 }
 
+/** Fechamento de um medidor em um mês (month = 0 → ano inteiro). */
+function closingForMonth(db, meterId, year, month) {
+  const { from, to } = F.closingRange(year, month);
+  return closingForMeter(db, meterId, from, to);
+}
+
 function monthKeys(count, today = F.todayISO()) {
   const [y, m] = today.split('-').map(Number);
   const keys = [];
@@ -148,12 +158,12 @@ function monthKeys(count, today = F.todayISO()) {
 /** Séries mensais de consumo por tipo (gráficos). */
 function chartSeries(db, { condominiumId, months = 6, today = F.todayISO() }) {
   const keys = monthKeys(months, today);
-  const from = F.monthRange(keys[0].year, keys[0].month).from;
-  const to = F.monthRange(keys[keys.length - 1].year, keys[keys.length - 1].month).to;
+  const from = F.closingRange(keys[0].year, keys[0].month).from;
+  const to = F.closingRange(keys[keys.length - 1].year, keys[keys.length - 1].month).to;
   const params = [from, to];
   let extra = '';
   if (condominiumId) { extra = 'AND m.condominium_id = ?'; params.push(condominiumId); }
-  const rows = db.prepare(`SELECT substr(v.reading_date,1,7) AS ym, m.utility_type, ROUND(SUM(v.consumption),3) AS consumption
+  const rows = db.prepare(`SELECT strftime('%Y-%m', v.reading_date, '-1 day') AS ym, m.utility_type, ROUND(SUM(v.consumption),3) AS consumption
       FROM v_readings v JOIN meters m ON m.id = v.meter_id JOIN condominiums c ON c.id = m.condominium_id
       WHERE v.reading_date BETWEEN ? AND ? AND m.kind = 'principal' AND c.status = 'active' ${extra}
       GROUP BY ym, m.utility_type`).all(...params);
@@ -222,10 +232,28 @@ function alerts(db, { condominiumId, today = F.todayISO() } = {}) {
       }
     }
   }
+  // Leituras com ocorrência nos últimos 30 dias (sem cálculo automático de consumo).
+  const occParams = [F.addDays(today, -30)];
+  let occExtra = '';
+  if (condominiumId) { occExtra = 'AND m.condominium_id = ?'; occParams.push(condominiumId); }
+  const occ = db.prepare(`SELECT r.reading_date, r.occurrence, r.occurrence_note, m.id AS meter_id, m.name AS meter_name, m.condominium_id,
+        t.name AS type_name, c.name AS condominium_name
+      FROM readings r JOIN meters m ON m.id = r.meter_id JOIN utility_types t ON t.code = m.utility_type
+      JOIN condominiums c ON c.id = m.condominium_id
+      WHERE r.occurrence IS NOT NULL AND r.reading_date >= ? AND c.status = 'active' AND m.active = 1 ${occExtra}
+      ORDER BY r.reading_date DESC`).all(...occParams);
+  for (const o of occ) {
+    const review = o.occurrence === 'correcao' || o.occurrence === 'outra';
+    out.push({ level: review ? 'warning' : 'info', kind: 'ocorrencia', icon: 'message-square-warning', condominium_id: o.condominium_id, meter_id: o.meter_id,
+      text: `${o.condominium_name}: leitura de ${o.type_name.toLowerCase()} (${o.meter_name}) de ${F.fmtDate(o.reading_date)} registrada com ocorrência `
+        + `"${OCCURRENCES[o.occurrence]}"${o.occurrence_note ? ` — ${o.occurrence_note}` : ''}. O consumo desse intervalo não foi calculado${review ? '; confira a leitura anterior' : ''}.` });
+  }
   const order = { danger: 0, warning: 1, info: 2 };
   out.sort((a, b) => order[a.level] - order[b.level]);
   return out;
 }
+
+const OCCURRENCES = { troca: 'troca do medidor', zeramento: 'zeramento do medidor', correcao: 'correção de leitura', outra: 'outra ocorrência' };
 
 /** Eventos do calendário em um mês. */
 function calendarEvents(db, { year, month, condominiumId, today = F.todayISO() }) {
@@ -267,14 +295,26 @@ function calendarEvents(db, { year, month, condominiumId, today = F.todayISO() }
     }
   }
 
-  // Leituras programadas (futuras) e pendentes (vencidas).
+  // Leituras programadas (futuras) e pendentes (vencidas ou nunca feitas).
   for (const st of meterStatuses(db, { condominiumId, today })) {
-    if (!st.next_due) continue;
+    if (st.status === 'sem_leitura') {
+      if (today >= from && today <= to) {
+        events.push({ date: today, kind: 'pendente', condominium_id: st.condominium_id, condominium_name: st.condominium_name,
+          utility_type: st.utility_type, type_name: st.type_name, icon: st.type_icon, meter_name: st.meter_name,
+          title: `${st.type_name} — medidor sem nenhuma leitura`, detail: st.meter_name });
+      }
+      continue;
+    }
     const base = { condominium_id: st.condominium_id, condominium_name: st.condominium_name, utility_type: st.utility_type,
       type_name: st.type_name, icon: st.type_icon, meter_name: st.meter_name };
     if (st.status === 'atrasada') {
+      // Mostra no dia previsto e também HOJE, para a pendência não "sumir" nos meses seguintes.
       if (st.next_due >= from && st.next_due <= to) {
         events.push({ ...base, date: st.next_due, kind: 'pendente', title: `${st.type_name} — leitura pendente`,
+          detail: `${st.meter_name} · atrasada há ${-st.days_to_due} dia(s)` });
+      }
+      if (today >= from && today <= to && today !== st.next_due) {
+        events.push({ ...base, date: today, kind: 'pendente', title: `${st.type_name} — leitura pendente desde ${F.fmtDate(st.next_due)}`,
           detail: `${st.meter_name} · atrasada há ${-st.days_to_due} dia(s)` });
       }
       continue;
@@ -295,5 +335,5 @@ function calendarEvents(db, { year, month, condominiumId, today = F.todayISO() }
 
 module.exports = {
   listMeters, getMeter, previousReading, nextReading, meterStatuses, consumptionByMeter, consumptionByType,
-  closingForMeter, chartSeries, alerts, calendarEvents, monthKeys,
+  closingForMeter, closingForMonth, chartSeries, alerts, calendarEvents, monthKeys, OCCURRENCES,
 };

@@ -11,13 +11,16 @@
  *   utility_types ─< meters        (água, gás, energia, e futuros tipos)
  *   settings                       (configurações gerais: chave/valor)
  *
- * O consumo NÃO é gravado na tabela readings: ele é sempre calculado pela
- * view v_readings (leitura atual − leitura anterior do mesmo medidor). Assim,
- * se uma leitura antiga for corrigida, todos os consumos continuam corretos.
+ * Consumo: cada leitura guarda a leitura anterior e o consumo (atual − anterior).
+ * Esses campos NUNCA são digitados: são recalculados por recalcMeter() para o
+ * medidor inteiro, na mesma transação, sempre que uma leitura dele é incluída,
+ * alterada ou excluída. Assim os consumos ficam sempre coerentes e as consultas
+ * usam índices (rápidas mesmo com muitos condomínios).
  */
 const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { nowLocal } = require('./format');
 
@@ -89,7 +92,7 @@ CREATE TABLE IF NOT EXISTS readings (
   reading_date  TEXT NOT NULL,              -- AAAA-MM-DD
   reading_time  TEXT NOT NULL DEFAULT '08:00', -- HH:MM
   value         REAL NOT NULL,
-  is_reset      INTEGER NOT NULL DEFAULT 0, -- 1 = medidor trocado/zerado (não calcula consumo)
+  is_reset      INTEGER NOT NULL DEFAULT 0, -- 1 = leitura com ocorrência (não calcula consumo; vira nova base)
   responsible   TEXT,
   notes         TEXT,
   created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -154,22 +157,9 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT
 );
 
--- Leituras com consumo calculado automaticamente (leitura atual − anterior).
+-- Compatibilidade: as consultas usam v_readings (o consumo agora fica gravado em readings).
 DROP VIEW IF EXISTS v_readings;
-CREATE VIEW v_readings AS
-SELECT x.*,
-       CASE WHEN x.is_reset = 1 OR x.prev_value IS NULL THEN NULL
-            ELSE ROUND(x.value - x.prev_value, 3) END AS consumption,
-       CASE WHEN x.prev_date IS NULL THEN NULL
-            ELSE CAST(julianday(x.reading_date) - julianday(x.prev_date) AS INTEGER) END AS interval_days
-FROM (
-  SELECT r.*,
-         LAG(r.value)        OVER w AS prev_value,
-         LAG(r.reading_date) OVER w AS prev_date,
-         LAG(r.reading_time) OVER w AS prev_time
-  FROM readings r
-  WINDOW w AS (PARTITION BY r.meter_id ORDER BY r.reading_date, r.reading_time, r.id)
-) x;
+CREATE VIEW v_readings AS SELECT * FROM readings;
 `;
 
 const UTILITY_TYPES = [
@@ -190,13 +180,76 @@ const DEFAULT_SETTINGS = {
   utility_upcoming_days: '5',  // leitura da concessionária próxima
 };
 
+const round3 = (v) => Math.round(v * 1000) / 1000;
+const dayDiff = (a, b) => Math.round((Date.parse(`${b}T12:00:00Z`) - Date.parse(`${a}T12:00:00Z`)) / 86400000);
+
+/**
+ * Recalcula leitura anterior, intervalo e consumo de todas as leituras de um medidor.
+ * Leituras com ocorrência (troca, zeramento, correção, outra) não geram consumo
+ * automático e passam a ser a nova base para a leitura seguinte.
+ */
+function recalcMeter(db, meterId) {
+  const rows = db.prepare(`SELECT id, reading_date, reading_time, value, is_reset, prev_value, prev_date, prev_time, consumption, interval_days
+      FROM readings WHERE meter_id = ? ORDER BY reading_date, reading_time, id`).all(meterId);
+  const up = db.prepare('UPDATE readings SET prev_value=?, prev_date=?, prev_time=?, consumption=?, interval_days=? WHERE id=?');
+  let prev = null;
+  for (const r of rows) {
+    const pv = prev ? prev.value : null;
+    const pd = prev ? prev.reading_date : null;
+    const pt = prev ? prev.reading_time : null;
+    const cons = !prev || r.is_reset ? null : round3(r.value - prev.value);
+    const days = prev ? dayDiff(prev.reading_date, r.reading_date) : null;
+    if (r.prev_value !== pv || r.prev_date !== pd || r.prev_time !== pt || r.consumption !== cons || r.interval_days !== days) {
+      up.run(pv, pd, pt, cons, days, r.id);
+    }
+    prev = r;
+  }
+}
+
+function columns(db, table) {
+  return new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
+}
+function addColumn(db, table, name, def) {
+  if (!columns(db, table).has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${def}`);
+}
+
+/** Atualiza bancos criados por versões anteriores (sem perder dados). */
+const SCHEMA_VERSION = 2;
+function migrate(db) {
+  const version = db.pragma('user_version', { simple: true });
+  addColumn(db, 'readings', 'prev_value', 'REAL');
+  addColumn(db, 'readings', 'prev_date', 'TEXT');
+  addColumn(db, 'readings', 'prev_time', 'TEXT');
+  addColumn(db, 'readings', 'consumption', 'REAL');
+  addColumn(db, 'readings', 'interval_days', 'INTEGER');
+  addColumn(db, 'readings', 'occurrence', "TEXT CHECK (occurrence IN ('troca','zeramento','correcao','outra'))");
+  addColumn(db, 'readings', 'occurrence_note', 'TEXT');
+  addColumn(db, 'condominiums', 'default_frequency_days', 'INTEGER NOT NULL DEFAULT 7');
+  addColumn(db, 'audit_logs', 'details', 'TEXT');
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_meters_type ON meters(utility_type);
+    CREATE INDEX IF NOT EXISTS idx_ucr_next ON utility_company_readings(next_reading_date);
+    CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs(user_id, action);
+    CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);`);
+  if (version < 2) {
+    db.transaction(() => {
+      // Leituras marcadas como "medidor trocado/zerado" na versão 1.
+      db.prepare("UPDATE readings SET occurrence = 'troca', occurrence_note = COALESCE(occurrence_note, 'Registrado como medidor trocado/zerado') WHERE is_reset = 1 AND occurrence IS NULL").run();
+      for (const m of db.prepare('SELECT id FROM meters').all()) recalcMeter(db, m.id);
+    })();
+  }
+  db.pragma(`user_version = ${SCHEMA_VERSION}`);
+}
+
 function open(file) {
   const dbFile = file || process.env.DB_FILE || path.join(__dirname, '..', 'data', 'medidores.db');
   if (dbFile !== ':memory:') fs.mkdirSync(path.dirname(dbFile), { recursive: true });
   const db = new Database(dbFile);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  db.pragma('busy_timeout = 5000');
   db.exec(SCHEMA);
+  migrate(db);
+  db.file = dbFile;
 
   const insType = db.prepare(`INSERT OR IGNORE INTO utility_types (code,name,unit,icon,color,sort_order,active) VALUES (?,?,?,?,?,?,?)`);
   for (const t of UTILITY_TYPES) insType.run(...t);
@@ -204,14 +257,17 @@ function open(file) {
   const insSetting = db.prepare('INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)');
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) insSetting.run(k, v);
 
-  // Primeiro acesso: cria o administrador padrão.
+  // Primeiro acesso: cria o administrador inicial. A senha vem de ADMIN_PASSWORD
+  // ou é gerada aleatoriamente (mostrada uma única vez no terminal).
   const count = db.prepare('SELECT COUNT(*) n FROM users').get().n;
   if (count === 0) {
     const now = nowLocal();
+    const email = (process.env.ADMIN_EMAIL || 'admin@admin.com').trim().toLowerCase();
+    const password = process.env.ADMIN_PASSWORD || crypto.randomBytes(6).toString('base64url');
     db.prepare(`INSERT INTO users (name,email,password_hash,role,must_change_password,created_at,updated_at)
                 VALUES (?,?,?,?,1,?,?)`)
-      .run('Administrador', 'admin@admin.com', bcrypt.hashSync('admin123', 10), 'admin', now, now);
-    db.firstRun = true;
+      .run('Administrador', email, bcrypt.hashSync(password, 10), 'admin', now, now);
+    db.firstRun = { email, password: process.env.ADMIN_PASSWORD ? '(definida em ADMIN_PASSWORD)' : password };
   }
   return db;
 }
@@ -222,4 +278,4 @@ function getSettings(db) {
   return out;
 }
 
-module.exports = { open, getSettings };
+module.exports = { open, getSettings, recalcMeter, SCHEMA_VERSION };

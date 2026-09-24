@@ -10,6 +10,7 @@ const { ValidationError, required, str, oneOf, isEmail, number } = require('../v
 const { getSettings } = require('../db');
 const F = require('../format');
 const R = require('../reports');
+const backup = require('../backup');
 const { UPLOAD_DIR, uploadPath, removeUpload } = require('../storage');
 
 const LOGO_TYPES = { 'image/png': '.png', 'image/jpeg': '.jpg' };
@@ -69,7 +70,7 @@ module.exports = (db) => {
     };
     if (!isEmail(d.email)) throw new ValidationError('O e-mail informado não é válido.');
     if (isNew && !d.password) throw new ValidationError('Defina uma senha inicial para o usuário.');
-    if (d.password && d.password.length < 6) throw new ValidationError('A senha deve ter pelo menos 6 caracteres.');
+    if (d.password && d.password.length < 8) throw new ValidationError('A senha deve ter pelo menos 8 caracteres.');
     return d;
   }
 
@@ -186,6 +187,24 @@ module.exports = (db) => {
     res.json({ ok: true });
   });
 
+  // ------------------------------------------------------------ Backup
+  r.get('/backups', requireAdmin, (_req, res) => {
+    res.json({ dir: backup.BACKUP_DIR, backups: backup.list() });
+  });
+
+  r.post('/backups', requireAdmin, async (req, res) => {
+    const b = await backup.run(db);
+    audit(db, req.user, { action: 'create', entity: 'backup', description: `${req.user.name} fez um backup manual (${b.name}).` });
+    res.json(b);
+  });
+
+  r.get('/backups/:name', requireAdmin, (req, res) => {
+    const p = backup.filePath(req.params.name);
+    if (!p) return res.status(404).json({ error: 'Backup não encontrado.' });
+    audit(db, req.user, { action: 'export', entity: 'backup', description: `${req.user.name} baixou o backup ${req.params.name}.` });
+    res.download(p, req.params.name);
+  });
+
   // ------------------------------------------------------------ Auditoria
   r.get('/audit', requireAdmin, (req, res) => {
     const where = [];
@@ -198,8 +217,15 @@ module.exports = (db) => {
     const page = Math.max(1, Number(req.query.page) || 1);
     const size = 50;
     const total = db.prepare(`SELECT COUNT(*) n FROM audit_logs ${w}`).get(...params).n;
-    const rows = db.prepare(`SELECT * FROM audit_logs ${w} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...params, size, (page - 1) * size);
+    const rows = db.prepare(`SELECT id, user_id, user_name, action, entity, entity_id, condominium_id, description, created_at,
+        details IS NOT NULL AS has_details FROM audit_logs ${w} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...params, size, (page - 1) * size);
     res.json({ total, page, pages: Math.max(1, Math.ceil(total / size)), rows });
+  });
+
+  r.get('/audit/:id', requireAdmin, (req, res) => {
+    const a = db.prepare('SELECT * FROM audit_logs WHERE id = ?').get(req.params.id);
+    if (!a) return res.status(404).json({ error: 'Registro não encontrado.' });
+    res.json({ ...a, details: a.details ? JSON.parse(a.details) : null });
   });
 
   return r;

@@ -4,16 +4,41 @@
  *
  *   npm run demo
  *
- * ATENÇÃO: apaga o banco atual (data/medidores.db) antes de criar os dados.
+ * Por segurança, o comando SE RECUSA a rodar se o banco já tiver dados reais.
+ * Para apagar mesmo assim (ex.: um banco de testes): npm run demo -- --force
+ * Para criar em outro arquivo: DB_FILE=data/demo.db npm run demo
  */
+require('../src/env').loadEnv();
 process.env.TZ = process.env.TZ || 'America/Sao_Paulo';
 const fs = require('fs');
 const path = require('path');
 const bcrypt = require('bcryptjs');
+const Database = require('better-sqlite3');
 const F = require('../src/format');
 
 const dbFile = process.env.DB_FILE || path.join(__dirname, '..', 'data', 'medidores.db');
-if (process.argv.includes('--keep') === false) {
+const force = process.argv.includes('--force');
+if (fs.existsSync(dbFile)) {
+  let hasData = false;
+  try {
+    const check = new Database(dbFile, { readonly: true });
+    const n = (t) => { try { return check.prepare(`SELECT COUNT(*) n FROM ${t}`).get().n; } catch { return 0; } };
+    const isDemo = n('users') > 0 && check.prepare("SELECT COUNT(*) n FROM users WHERE email = 'edmilson@condominio.com'").get().n > 0
+      && n('condominiums') === 3;
+    hasData = (n('condominiums') > 0 || n('readings') > 0) && !isDemo;
+    check.close();
+  } catch { hasData = true; }
+  if (hasData && !force) {
+    console.error('');
+    console.error(`  ATENÇÃO: o banco ${dbFile} já possui dados.`);
+    console.error('  O comando "npm run demo" APAGA o banco para criar dados de exemplo, por isso foi cancelado.');
+    console.error('  Nada foi alterado.');
+    console.error('');
+    console.error('  Para criar a demonstração em outro arquivo:  DB_FILE=data/demo.db npm run demo');
+    console.error('  Para apagar este banco mesmo assim:          npm run demo -- --force');
+    console.error('');
+    process.exit(1);
+  }
   for (const f of [dbFile, `${dbFile}-wal`, `${dbFile}-shm`]) fs.rmSync(f, { force: true });
 }
 const db = require('../src/db').open(dbFile);
@@ -32,8 +57,8 @@ const users = [
 ];
 const insUser = db.prepare(`INSERT INTO users (name,email,password_hash,role,active,must_change_password,created_at,updated_at)
                             VALUES (?,?,?,?,1,0,?,?)`);
-for (const [name, email, role] of users) insUser.run(name, email, bcrypt.hashSync('123456', 10), role, now, now);
-db.prepare("UPDATE users SET must_change_password = 0 WHERE email = 'admin@admin.com'").run();
+for (const [name, email, role] of users) insUser.run(name, email, bcrypt.hashSync('12345678', 10), role, now, now);
+db.prepare("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE role = 'admin' AND id = 1").run(bcrypt.hashSync('admin12345', 10));
 db.prepare("UPDATE settings SET value = 'Administradora Exemplo' WHERE key = 'org_name'").run();
 const edmilson = db.prepare("SELECT id FROM users WHERE email = 'edmilson@condominio.com'").get().id;
 
@@ -121,9 +146,14 @@ db.transaction(() => {
   insUC.run(moemaGas, '2026-09-18', 10070.0, 'Comgás', '2026-10-19', null, edmilson, now, now);
 })();
 
+// Calcula leitura anterior e consumo de todas as leituras.
+const { recalcMeter } = require('../src/db');
+db.transaction(() => { for (const m of db.prepare('SELECT id FROM meters').all()) recalcMeter(db, m.id); })();
+
 const n = db.prepare('SELECT COUNT(*) n FROM readings').get().n;
 console.log(`Banco de demonstração criado em ${dbFile}`);
 console.log(`  ${n} leituras em 3 condomínios.`);
-console.log('  Acessos: edmilson@condominio.com / 123456 (administrador)');
-console.log('           maria@condominio.com / 123456 (operador)');
-console.log('           admin@admin.com / admin123 (administrador)');
+const adm = db.prepare('SELECT email FROM users WHERE id = 1').get().email;
+console.log('  Acessos: edmilson@condominio.com / 12345678 (administrador)');
+console.log('           maria@condominio.com / 12345678 (operador)');
+console.log(`           ${adm} / admin12345 (administrador)`);

@@ -3,7 +3,7 @@ import { api } from '../api.js';
 import { html, mount, icon, $, $$, fmtNum, fmtDate, todayISO, addDays, pref, emptyState } from '../util.js';
 import { getCondos, currentCondo } from '../state.js';
 import { condoSelect, typeDot } from '../components.js';
-import { openReading } from './new-reading.js';
+import { openReading, occurrenceShort } from './new-reading.js';
 import { go, refresh } from '../app.js';
 
 export const PERIODS = [
@@ -14,6 +14,13 @@ export function periodRange(p) {
   if (p === 'all') return { from: '', to: '' };
   if (p === '1') return { from: `${today.slice(0, 8)}01`, to: today };
   return { from: addDays(today, -Math.round(Number(p) * 30.4)), to: today };
+}
+
+const MONTHS_SHORT = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+/** "fechamento ago" para uma leitura do dia 01/09. */
+function closesLabel(iso) {
+  const m = Number(iso.slice(5, 7));
+  return MONTHS_SHORT[(m + 10) % 12];
 }
 
 export function readingsTabs(active) {
@@ -45,6 +52,7 @@ export async function render(el, ctx) {
   if (!ctx.isCurrent()) return;
   currentCondo.set(condoId);
   const { meters, rows, totals } = sheet;
+  for (const r of rows) for (const c of Object.values(r.cells)) c.occurrence_label = c.occurrence ? occurrenceShort(c.occurrence) : '';
   const multi = (type) => meters.filter((m) => m.utility_type === type).length > 1;
   const colTitle = (m) => (multi(m.utility_type) ? `${m.type_name} — ${m.name}` : m.type_name);
 
@@ -59,7 +67,18 @@ export async function render(el, ctx) {
     </div></div>
 
     <div class="card">
-      ${rows.length ? html`<div class="table-wrap"><table class="table sheet">
+      ${rows.length ? html`<div class="sheet-cards show-mobile-block">${rows.map((r) => html`<div class="sheet-card">
+          <div class="sc-head"><b>${fmtDate(r.date)}</b> <span class="muted">${r.weekday} · ${r.time}${r.responsible ? ` · ${r.responsible}` : ''}</span>
+            ${r.date.slice(8) === '01' ? html`<span class="badge b-blue">fechamento ${closesLabel(r.date)}</span>` : ''}</div>
+          ${meters.filter((m) => r.cells[m.id]).map((m) => {
+            const c = r.cells[m.id];
+            return html`<button type="button" class="sc-row" data-reading="${c.id}">${typeDot(m.utility_type)}
+              <span class="sc-name">${colTitle(m)}</span>
+              <span class="sc-val">${fmtNum(c.value)} <small>${m.unit}</small></span>
+              <span class="sc-cons">${c.occurrence ? html`<span class="badge b-yellow">${c.occurrence_label}</span>` : c.consumption !== null ? html`+${fmtNum(c.consumption)}` : '—'}</span></button>`;
+          })}
+        </div>`)}</div>
+        <div class="table-wrap hide-mobile"><table class="table sheet">
         <thead>
           <tr><th rowspan="2">Data</th><th rowspan="2">Dia</th>
             ${meters.map((m) => html`<th colspan="2" class="group gstart"><span style="display:inline-flex;gap:6px;align-items:center">${typeDot(m.utility_type)} ${colTitle(m)} (${m.unit})</span></th>`)}
@@ -67,20 +86,20 @@ export async function render(el, ctx) {
           <tr>${meters.map(() => html`<th class="num gstart">Leitura</th><th class="num">Consumo</th>`)}</tr>
         </thead>
         <tbody>${rows.map((r) => html`<tr>
-          <td class="nowrap"><b>${fmtDate(r.date)}</b></td><td>${r.weekday}</td>
+          <td class="nowrap"><b>${fmtDate(r.date)}</b>${r.date.slice(8) === '01' ? html`<div><span class="badge b-blue" title="Fecha o mês anterior e é a leitura inicial do mês">fechamento ${closesLabel(r.date)}</span></div>` : ''}</td><td>${r.weekday}</td>
           ${meters.map((m) => {
             const c = r.cells[m.id];
             if (!c) return html`<td class="num gstart muted">—</td><td class="num muted">—</td>`;
             return html`<td class="num gstart cell-click" data-reading="${c.id}" title="${c.notes ? `Obs.: ${c.notes}` : 'Ver detalhes'}">${fmtNum(c.value)}${c.notes ? html` ${icon('message-square', 'small')}` : ''}</td>
-              <td class="num cons cell-click" data-reading="${c.id}">${c.is_reset ? html`<span class="badge b-gray" title="Medidor trocado/zerado">troca</span>` : fmtNum(c.consumption)}</td>`;
+              <td class="num cons cell-click" data-reading="${c.id}">${c.occurrence ? html`<span class="badge b-yellow" title="Leitura com ocorrência: consumo não calculado">${c.occurrence_label}</span>` : fmtNum(c.consumption)}</td>`;
           })}
           <td class="gstart">${r.time}</td><td>${r.responsible || '—'}</td>
         </tr>`)}</tbody>
-        <tfoot><tr><td colspan="2">Consumo no período</td>
+        <tfoot><tr><td colspan="2">Soma dos consumos exibidos</td>
           ${meters.map((m) => html`<td class="gstart"></td><td class="num cons">${fmtNum(totals[m.id])}</td>`)}
           <td class="gstart" colspan="2"></td></tr></tfoot>
       </table></div>
-      <div class="card-body small muted">${icon('info', 'small')} Toque em uma leitura para ver os detalhes.</div>`
+      <div class="card-body small muted">${icon('info', 'small')} Toque em uma leitura para ver os detalhes. A leitura do dia 01 fecha o mês anterior e é a leitura inicial do mês.</div>`
       : emptyState('clipboard-list', 'Nenhuma leitura no período', meters.length ? 'Registre a primeira leitura ou escolha outro período.' : 'Este condomínio ainda não tem medidores cadastrados.',
         meters.length ? html`<a class="btn btn-primary" href="#/leituras/nova">${icon('plus')} Registrar leitura</a>` : html`<a class="btn btn-primary" href="#/condominios/${condoId}">${icon('gauge')} Cadastrar medidores</a>`)}
     </div>`);

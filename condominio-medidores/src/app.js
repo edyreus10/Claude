@@ -9,12 +9,22 @@ const { ValidationError } = require('./validate');
 function createApp(db) {
   const app = express();
   app.disable('x-powered-by');
-  app.set('trust proxy', 'loopback');
+  // Atrás de um proxy HTTPS (Nginx, Caddy, serviço de hospedagem), defina TRUST_PROXY
+  // (ex.: TRUST_PROXY=1) para o sistema reconhecer o HTTPS e o IP real do usuário.
+  const trust = process.env.TRUST_PROXY;
+  app.set('trust proxy', trust === undefined || trust === '' ? 'loopback' : /^\d+$/.test(trust) ? Number(trust) : trust);
 
-  app.use((_req, res, next) => {
+  const CSP = [
+    "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'", "img-src 'self' data: blob:",
+    "font-src 'self'", "connect-src 'self'", "object-src 'none'", "base-uri 'self'", "form-action 'self'", "frame-ancestors 'self'",
+  ].join('; ');
+  app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     res.setHeader('Referrer-Policy', 'same-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    if (!req.path.startsWith('/api/')) res.setHeader('Content-Security-Policy', CSP);
+    if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=15552000');
     next();
   });
 
@@ -24,6 +34,7 @@ function createApp(db) {
   const api = express.Router();
   api.use(csrfGuard);
   api.use((_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+  api.get('/health', (_req, res) => { db.prepare('SELECT 1').get(); res.json({ ok: true }); });
   api.use('/auth', require('./routes/auth')(db));
   api.use(requireAuth);
   api.use('/condominiums', require('./routes/condominiums')(db));

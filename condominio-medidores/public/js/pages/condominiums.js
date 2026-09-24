@@ -2,7 +2,7 @@
 import { api } from '../api.js';
 import { html, mount, icon, $, $$, openModal, confirmDialog, formData, withBusy, toast, fmtDate, emptyState } from '../util.js';
 import { getCondos, invalidateCondos, isAdmin, currentCondo } from '../state.js';
-import { typeDot, statusBadge, nextReadingText, frequencyLabel } from '../components.js';
+import { typeDot, statusBadge, nextReadingText, frequencyLabel, FREQUENCIES } from '../components.js';
 import { openMeterForm, deleteMeter } from './meters.js';
 import { go, refresh } from '../app.js';
 
@@ -113,6 +113,7 @@ async function renderDetail(el, id, ctx) {
             <dt>Telefone</dt><dd>${c.phone || '—'}</dd>
             <dt>E-mail</dt><dd>${c.email || '—'}</dd>
             <dt>Endereço</dt><dd>${c.address || '—'}</dd>
+            <dt>Frequência padrão</dt><dd>${frequencyLabel(c.default_frequency_days || 7)}</dd>
           </dl>
           ${admin ? html`<div style="margin-top:18px;border-top:1px solid var(--border);padding-top:14px">
             <button class="btn btn-ghost btn-sm" id="btn-del" style="color:var(--danger)">${icon('trash')} Excluir condomínio</button></div>` : ''}
@@ -166,6 +167,10 @@ export function openCondoForm(c, onSaved) {
         <div class="field"><label for="c-syndic">Síndico</label><input class="input" id="c-syndic" name="syndic" value="${v.syndic || ''}"></div>
         <div class="field"><label for="c-manager">Administrador responsável</label><input class="input" id="c-manager" name="manager" value="${v.manager || ''}"></div>
       </div>
+      <div class="field"><label for="c-freq">Frequência padrão das leituras</label><select class="select" id="c-freq" name="default_frequency_days">
+        ${FREQUENCIES.map(([d, l]) => html`<option value="${d}" ${Number(v.default_frequency_days || 7) === d ? 'selected' : ''}>${l}</option>`)}
+        ${FREQUENCIES.some(([d]) => d === Number(v.default_frequency_days || 7)) ? '' : html`<option value="${v.default_frequency_days}" selected>A cada ${v.default_frequency_days} dias</option>`}
+      </select><span class="hint">Usada como padrão ao cadastrar novos medidores. Cada medidor pode ter a sua própria frequência.</span></div>
       <div class="form-row">
         <div class="field"><label for="c-phone">Telefone</label><input class="input" id="c-phone" name="phone" value="${v.phone || ''}" inputmode="tel" placeholder="(11) 0000-0000"></div>
         <div class="field"><label for="c-email">E-mail</label><input class="input" id="c-email" name="email" type="email" value="${v.email || ''}"></div>

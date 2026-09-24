@@ -2,10 +2,16 @@
 /** Registro de auditoria: quem fez o quê e quando. */
 const { nowLocal } = require('./format');
 
-function audit(db, user, { action, entity, entityId = null, condominiumId = null, description }) {
-  db.prepare(`INSERT INTO audit_logs (user_id,user_name,action,entity,entity_id,condominium_id,description,created_at)
-              VALUES (?,?,?,?,?,?,?,?)`)
-    .run(user ? user.id : null, user ? user.name : 'Sistema', action, entity, entityId, condominiumId, description, nowLocal());
+/**
+ * Grava um registro de auditoria.
+ * details: dados completos (antes/depois ou o registro excluído), guardados em JSON
+ * para permitir conferência posterior.
+ */
+function audit(db, user, { action, entity, entityId = null, condominiumId = null, description, details = null }) {
+  db.prepare(`INSERT INTO audit_logs (user_id,user_name,action,entity,entity_id,condominium_id,description,details,created_at)
+              VALUES (?,?,?,?,?,?,?,?,?)`)
+    .run(user ? user.id : null, user ? user.name : 'Sistema', action, entity, entityId, condominiumId, description,
+      details ? JSON.stringify(details) : null, nowLocal());
 }
 
 /** Descreve as diferenças entre dois objetos, usando rótulos amigáveis. */
