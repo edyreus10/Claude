@@ -1,0 +1,9 @@
+{
+  "name": "Controle de Medidores",
+  "short_name": "Medidores",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f3f5f8",
+  "theme_color": "#0f766e",
+  "icons": [{ "src": "/img/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}
