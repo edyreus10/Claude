@@ -80,7 +80,7 @@ export async function deleteMeter(m, onDone) {
 export async function openMeterForm(meter, { condominiumId = '', onSaved }) {
   const condos = (await getCondos()).filter((c) => c.status === 'active' || (meter && c.id === meter.condominium_id));
   const types = state.meta.utility_types.filter((t) => t.active || (meter && t.code === meter.utility_type));
-  const v = meter || { utility_type: 'agua', kind: 'principal', frequency_days: 7, active: 1, condominium_id: condominiumId };
+  const v = meter || { utility_type: 'agua', kind: 'principal', frequency_days: 1, active: 1, condominium_id: condominiumId };
   const hasReadings = meter && meter.readings_count > 0;
   const m = openModal({
     title: meter ? 'Editar medidor' : 'Novo medidor',

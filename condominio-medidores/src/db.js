@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS meters (
   location        TEXT,
   utility_company TEXT,
   kind            TEXT NOT NULL DEFAULT 'principal' CHECK (kind IN ('principal','area')),
-  frequency_days  INTEGER NOT NULL DEFAULT 7,
+  frequency_days  INTEGER NOT NULL DEFAULT 1,   -- dias entre leituras da administração (padrão: diária)
   notes           TEXT,
   active          INTEGER NOT NULL DEFAULT 1,
   created_at      TEXT NOT NULL,
@@ -214,7 +214,7 @@ function addColumn(db, table, name, def) {
 }
 
 /** Atualiza bancos criados por versões anteriores (sem perder dados). */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 function migrate(db) {
   const version = db.pragma('user_version', { simple: true });
   addColumn(db, 'readings', 'prev_value', 'REAL');
@@ -224,7 +224,7 @@ function migrate(db) {
   addColumn(db, 'readings', 'interval_days', 'INTEGER');
   addColumn(db, 'readings', 'occurrence', "TEXT CHECK (occurrence IN ('troca','zeramento','correcao','outra'))");
   addColumn(db, 'readings', 'occurrence_note', 'TEXT');
-  addColumn(db, 'condominiums', 'default_frequency_days', 'INTEGER NOT NULL DEFAULT 7');
+  addColumn(db, 'condominiums', 'default_frequency_days', 'INTEGER NOT NULL DEFAULT 1');
   addColumn(db, 'audit_logs', 'details', 'TEXT');
   db.exec(`CREATE INDEX IF NOT EXISTS idx_meters_type ON meters(utility_type);
     CREATE INDEX IF NOT EXISTS idx_ucr_next ON utility_company_readings(next_reading_date);
@@ -236,6 +236,12 @@ function migrate(db) {
       db.prepare("UPDATE readings SET occurrence = 'troca', occurrence_note = COALESCE(occurrence_note, 'Registrado como medidor trocado/zerado') WHERE is_reset = 1 AND occurrence IS NULL").run();
       for (const m of db.prepare('SELECT id FROM meters').all()) recalcMeter(db, m.id);
     })();
+  }
+  if (version < 3) {
+    // v3: a leitura da administração passou a ser DIÁRIA por padrão. Condomínios e
+    // medidores que estavam no padrão antigo (semanal) passam para diária.
+    db.prepare('UPDATE condominiums SET default_frequency_days = 1 WHERE default_frequency_days = 7').run();
+    db.prepare('UPDATE meters SET frequency_days = 1 WHERE frequency_days = 7').run();
   }
   db.pragma(`user_version = ${SCHEMA_VERSION}`);
 }

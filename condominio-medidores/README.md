@@ -105,9 +105,13 @@ A leitura do **dia 01** fecha o mês anterior **e** é a leitura inicial do novo
 
 - Totais do dashboard, gráficos e relatórios somam os medidores **principais**. Medidores de
   **área específica** (piscina, academia...) aparecem separados, para não somar em dobro.
-- **Frequência de leitura:** cada condomínio tem uma frequência padrão (usada ao cadastrar medidores)
-  e cada medidor pode ter a sua (diária, semanal, quinzenal, mensal).
-  **Próxima leitura** = última leitura + frequência do medidor.
+- **Frequência de leitura:** o padrão é **DIÁRIA** (uma leitura da administração por dia).
+  Cada condomínio tem uma frequência padrão (usada ao cadastrar medidores) e cada medidor pode ter a
+  sua (diária, semanal, quinzenal, mensal), se algum precisar de frequência diferente.
+  - **Medidor diário:** espera-se uma leitura por dia a partir da primeira leitura. Cada dia anterior
+    a hoje sem leitura aparece como **pendente** (vermelho) no calendário, no dashboard e nos alertas.
+    A leitura de hoje aparece como programada (amarelo) até ser registrada.
+  - **Outras frequências:** próxima leitura = última leitura + frequência do medidor.
 - As **leituras oficiais das concessionárias** são controladas separadamente, com a data realizada
   (não pode ser futura), a próxima leitura prevista e o comprovante.
 - **Alerta de consumo alto**: consumo médio por dia dos últimos 30 dias × média dos 6 meses anteriores

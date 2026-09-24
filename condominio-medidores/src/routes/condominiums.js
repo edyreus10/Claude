@@ -22,7 +22,7 @@ function readBody(body) {
     phone: str(body.phone, 40),
     email: str(body.email, 150),
     status: oneOf(body.status, ['active', 'inactive'], 'Status', 'active'),
-    default_frequency_days: number(body.default_frequency_days, 'Frequência padrão de leitura', { min: 1 }) || 7,
+    default_frequency_days: number(body.default_frequency_days, 'Frequência padrão de leitura', { min: 1 }) || 1, // padrão: diária
   };
   if (!Number.isInteger(data.default_frequency_days) || data.default_frequency_days > 366) {
     throw new ValidationError('A frequência padrão deve ser um número de dias entre 1 e 366.');

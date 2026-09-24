@@ -42,9 +42,34 @@ function nextReading(db, meterId, date, time, excludeId = 0) {
     .get(meterId, excludeId, date, date, time);
 }
 
+/** Quantos dias para trás o sistema procura dias sem leitura (medidores diários). */
+const MISSING_WINDOW_DAYS = 31;
+
 /**
- * Situação de cada medidor ativo: última leitura, próxima leitura programada
- * e leitura da concessionária.
+ * Dias sem leitura de um medidor DIÁRIO, de ontem para trás (até MISSING_WINDOW_DAYS),
+ * a partir da primeira leitura do medidor. O dia de hoje não conta como falta:
+ * a leitura de hoje ainda pode ser registrada.
+ */
+function missingDays(db, meterId, firstDate, today) {
+  const yesterday = F.addDays(today, -1);
+  let start = F.addDays(today, -MISSING_WINDOW_DAYS);
+  if (firstDate > start) start = firstDate;
+  if (start > yesterday) return [];
+  const have = new Set(db.prepare(`SELECT DISTINCT reading_date d FROM readings WHERE meter_id = ? AND reading_date BETWEEN ? AND ?`)
+    .all(meterId, start, yesterday).map((r) => r.d));
+  const out = [];
+  for (let d = start; d <= yesterday; d = F.addDays(d, 1)) if (!have.has(d)) out.push(d);
+  return out;
+}
+
+/**
+ * Situação de cada medidor ativo: última leitura, próxima leitura programada,
+ * dias sem leitura e leitura da concessionária (controlada separadamente).
+ *
+ * Medidor DIÁRIO (padrão): espera-se uma leitura por dia.
+ *   - leu hoje → em dia;  ainda não leu hoje → "próxima" (leitura de hoje);
+ *   - algum dia anterior sem leitura → atrasada (missing_dates lista os dias).
+ * Outras frequências: próxima leitura = última leitura + frequência.
  */
 function meterStatuses(db, { condominiumId, today = F.todayISO() } = {}) {
   const s = getSettings(db);
@@ -52,6 +77,7 @@ function meterStatuses(db, { condominiumId, today = F.todayISO() } = {}) {
   const meters = listMeters(db, { condominiumId, activeOnly: true });
   const lastStmt = db.prepare(`SELECT reading_date, reading_time, value FROM readings WHERE meter_id = ?
                                ORDER BY reading_date DESC, reading_time DESC, id DESC LIMIT 1`);
+  const firstStmt = db.prepare('SELECT MIN(reading_date) d FROM readings WHERE meter_id = ?');
   const ucStmt = db.prepare(`SELECT reading_date, next_reading_date, value, company FROM utility_company_readings
                              WHERE meter_id = ? ORDER BY reading_date DESC, id DESC LIMIT 1`);
   return meters.map((m) => {
@@ -60,7 +86,14 @@ function meterStatuses(db, { condominiumId, today = F.todayISO() } = {}) {
     let status = 'sem_leitura';
     let nextDue = null;
     let daysToDue = null;
-    if (last) {
+    let missing = [];
+    const daily = Number(m.frequency_days) === 1;
+    if (last && daily) {
+      missing = missingDays(db, m.id, firstStmt.get(m.id).d, today);
+      nextDue = last.reading_date >= today ? F.addDays(last.reading_date, 1) : (missing[0] || today);
+      daysToDue = F.diffDays(today, nextDue);
+      status = missing.length ? 'atrasada' : last.reading_date >= today ? 'em_dia' : 'proxima';
+    } else if (last) {
       nextDue = F.addDays(last.reading_date, m.frequency_days);
       daysToDue = F.diffDays(today, nextDue);
       status = daysToDue < 0 ? 'atrasada' : daysToDue <= upcomingDays ? 'proxima' : 'em_dia';
@@ -69,8 +102,9 @@ function meterStatuses(db, { condominiumId, today = F.todayISO() } = {}) {
       meter_id: m.id, meter_name: m.name, identifier: m.identifier, unit: m.unit, kind: m.kind,
       utility_type: m.utility_type, type_name: m.type_name, type_icon: m.type_icon, type_color: m.type_color,
       condominium_id: m.condominium_id, condominium_name: m.condominium_name,
-      frequency_days: m.frequency_days,
+      frequency_days: m.frequency_days, daily,
       last_reading: last, next_due: nextDue, days_to_due: daysToDue, status,
+      missing_dates: missing, read_today: !!last && last.reading_date >= today,
       utility_last: uc,
       utility_next: uc && uc.next_reading_date ? uc.next_reading_date : null,
     };
@@ -201,10 +235,18 @@ function alerts(db, { condominiumId, today = F.todayISO() } = {}) {
     if (m.status === 'sem_leitura') {
       out.push({ level: 'danger', kind: 'sem_leitura', icon: 'circle-alert', condominium_id: m.condominium_id, meter_id: m.meter_id,
         text: `${m.condominium_name}: o medidor ${label} ainda não possui nenhuma leitura.` });
+    } else if (m.status === 'atrasada' && m.daily) {
+      const n = m.missing_dates.length;
+      const list = m.missing_dates.slice(-5).map((d) => F.fmtDate(d).slice(0, 5)).join(', ');
+      out.push({ level: 'danger', kind: 'atrasada', icon: 'clock-alert', condominium_id: m.condominium_id, meter_id: m.meter_id,
+        text: `${m.condominium_name}: ${label} sem leitura em ${n} dia${n > 1 ? 's' : ''} (${n > 5 ? '…, ' : ''}${list}).` });
     } else if (m.status === 'atrasada') {
       const d = -m.days_to_due;
       out.push({ level: 'danger', kind: 'atrasada', icon: 'clock-alert', condominium_id: m.condominium_id, meter_id: m.meter_id,
         text: `${m.condominium_name}: leitura de ${label} atrasada há ${d} dia${d > 1 ? 's' : ''} (prevista para ${F.fmtDate(m.next_due)}).` });
+    } else if (m.status === 'proxima' && m.daily) {
+      out.push({ level: 'warning', kind: 'proxima', icon: 'calendar-clock', condominium_id: m.condominium_id, meter_id: m.meter_id,
+        text: `${m.condominium_name}: leitura de hoje de ${label} ainda não registrada.` });
     } else if (m.status === 'proxima') {
       const when = m.days_to_due === 0 ? 'hoje' : m.days_to_due === 1 ? 'amanhã' : `em ${m.days_to_due} dias (${F.fmtDate(m.next_due)})`;
       out.push({ level: 'warning', kind: 'proxima', icon: 'calendar-clock', condominium_id: m.condominium_id, meter_id: m.meter_id,
@@ -296,7 +338,28 @@ function calendarEvents(db, { year, month, condominiumId, today = F.todayISO() }
   }
 
   // Leituras programadas (futuras) e pendentes (vencidas ou nunca feitas).
+  const readDays = db.prepare('SELECT DISTINCT reading_date d FROM readings WHERE meter_id = ? AND reading_date BETWEEN ? AND ?');
+  const firstRead = db.prepare('SELECT MIN(reading_date) d FROM readings WHERE meter_id = ?');
+  const dailyPlanned = new Map(); // "data|condomínio" → medidores diários esperados
   for (const st of meterStatuses(db, { condominiumId, today })) {
+    if (st.daily && st.status !== 'sem_leitura') {
+      // Medidor diário: uma leitura esperada por dia, a partir da primeira leitura.
+      const base = { condominium_id: st.condominium_id, condominium_name: st.condominium_name, utility_type: st.utility_type,
+        type_name: st.type_name, icon: st.type_icon, meter_name: st.meter_name };
+      const start = firstRead.get(st.meter_id).d;
+      const have = new Set(readDays.all(st.meter_id, from, to).map((r) => r.d));
+      for (let d = from; d <= to; d = F.addDays(d, 1)) {
+        if (d < start || have.has(d)) continue;
+        if (d < today) {
+          events.push({ ...base, date: d, kind: 'pendente', title: `${st.type_name} — dia sem leitura`, detail: st.meter_name });
+        } else {
+          const key = `${d}|${st.condominium_id}`;
+          if (!dailyPlanned.has(key)) dailyPlanned.set(key, { ...base, date: d, meters: [] });
+          dailyPlanned.get(key).meters.push(st.type_name);
+        }
+      }
+      continue;
+    }
     if (st.status === 'sem_leitura') {
       if (today >= from && today <= to) {
         events.push({ date: today, kind: 'pendente', condominium_id: st.condominium_id, condominium_name: st.condominium_name,
@@ -327,6 +390,14 @@ function calendarEvents(db, { year, month, condominiumId, today = F.todayISO() }
       }
       d = F.addDays(d, st.frequency_days);
     }
+  }
+  // Leituras diárias programadas: um evento por dia e condomínio (não um por medidor).
+  for (const p of dailyPlanned.values()) {
+    const names = [...new Set(p.meters)];
+    events.push({ date: p.date, kind: 'programada', condominium_id: p.condominium_id, condominium_name: p.condominium_name,
+      utility_type: names.length === 1 ? p.utility_type : 'outro', type_name: names.length === 1 ? names[0] : 'Diária',
+      icon: 'calendar-clock', meter_name: '',
+      title: `${p.date === today ? 'Leitura de hoje' : 'Leitura diária programada'} — ${names.join(', ')}`, detail: 'leitura da administração' });
   }
   const order = { pendente: 0, programada: 1, concessionaria: 2, realizada: 3 };
   events.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : order[a.kind] - order[b.kind]));

@@ -17,7 +17,7 @@ function readBody(db, body) {
   const type = db.prepare('SELECT * FROM utility_types WHERE code = ?').get(body.utility_type);
   if (!type) throw new ValidationError('Selecione o tipo de medidor (Água, Gás, Energia...).');
   const freq = number(body.frequency_days, 'Frequência de leitura', { min: 1 })
-    || (db.prepare('SELECT default_frequency_days d FROM condominiums WHERE id = ?').get(Number(body.condominium_id)) || {}).d || 7;
+    || (db.prepare('SELECT default_frequency_days d FROM condominiums WHERE id = ?').get(Number(body.condominium_id)) || {}).d || 1; // padrão: diária
   if (freq > 366 || !Number.isInteger(freq)) throw new ValidationError('A frequência de leitura deve ser um número de dias entre 1 e 366.');
   return {
     condominium_id: id(body.condominium_id, 'condomínio'),

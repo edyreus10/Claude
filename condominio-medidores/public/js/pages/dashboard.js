@@ -32,9 +32,9 @@ export async function render(el, ctx) {
 
     <div class="grid stats section">
       ${stat('building', '', 'Condomínios ativos', d.cards.condominiums, `${d.cards.meters} medidores`, 'condominios')}
-      ${stat('clock-alert', d.cards.pending ? 't-danger' : 't-success', 'Leituras pendentes', d.cards.pending, d.cards.pending ? 'atrasadas ou sem leitura' : 'nenhuma pendência', 'calendario')}
+      ${stat('clock-alert', d.cards.pending ? 't-danger' : 't-success', 'Leituras pendentes', d.cards.pending, d.cards.pending ? (d.cards.pending_days ? `${d.cards.pending_days} dia(s) sem leitura` : 'atrasadas ou sem leitura') : 'nenhuma pendência', 'calendario')}
       ${stat('clipboard-check', 't-success', 'Leituras no mês', d.cards.readings_month, capital(d.month_name), 'leituras')}
-      ${stat('calendar-clock', 't-warning', 'Próximas leituras', d.cards.upcoming, 'nos próximos dias', 'calendario')}
+      ${stat('calendar-clock', 't-warning', 'Próximas leituras', d.cards.upcoming, 'inclui as leituras de hoje', 'calendario')}
     </div>
 
     <div class="grid stats-3 section">${d.consumption.map(consCard)}</div>

@@ -119,6 +119,7 @@ module.exports = (db) => {
       cards: {
         condominiums: totalCondos,
         pending: statuses.filter((s) => s.status === 'atrasada' || s.status === 'sem_leitura').length,
+        pending_days: statuses.reduce((a, s) => a + (s.missing_dates ? s.missing_dates.length : 0), 0),
         readings_month: readingsMonth,
         upcoming: statuses.filter((s) => s.status === 'proxima').length,
         meters: statuses.length,

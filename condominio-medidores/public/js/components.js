@@ -34,6 +34,12 @@ export function statusBadge(status) {
 /** Texto amigável para a próxima leitura de um medidor. */
 export function nextReadingText(st) {
   if (st.status === 'sem_leitura') return 'nenhuma leitura registrada';
+  if (st.daily) {
+    // Leitura diária: mostra se a de hoje já foi feita e os dias que faltaram.
+    const hoje = st.read_today ? 'leitura de hoje registrada' : 'leitura de hoje pendente';
+    const n = st.missing_dates ? st.missing_dates.length : 0;
+    return n ? `${hoje} · ${n} dia${n > 1 ? 's' : ''} sem leitura (último: ${fmtDate(st.missing_dates[n - 1])})` : hoje;
+  }
   if (st.status === 'atrasada') return `atrasada desde ${fmtDate(st.next_due)}`;
   if (st.days_to_due === 0) return `próxima leitura: hoje (${fmtDate(st.next_due)})`;
   if (st.days_to_due === 1) return `próxima leitura: amanhã (${fmtDate(st.next_due)})`;

@@ -320,3 +320,36 @@ test('migração: consumo gravado confere com o recálculo', () => {
   const after = db.prepare('SELECT id, consumption, prev_value FROM readings ORDER BY id').all();
   assert.deepStrictEqual(after, before);
 });
+
+test('leitura diária: padrão, dias sem leitura, calendário e frequência diferente', async () => {
+  const c = await admin.post('/api/condominiums', { name: 'Teste Diário' });
+  assert.strictEqual(c.data.default_frequency_days, 1);
+  const m = await admin.post('/api/meters', { condominium_id: c.data.id, utility_type: 'agua', name: 'Hidrômetro' });
+  assert.strictEqual(m.data.frequency_days, 1); // padrão: diária
+  const semanal = await admin.post('/api/meters', { condominium_id: c.data.id, utility_type: 'gas', name: 'Gás', frequency_days: 7 });
+  assert.strictEqual(semanal.data.frequency_days, 7); // continua configurável
+  const t = todayISO();
+  const days = [-6, -5, -4, -2, -1].map((n) => addDays(t, n)); // falta o dia -3
+  let v = 100;
+  for (const d of days) { await admin.post('/api/readings', { meter_id: m.data.id, reading_date: d, value: v }); v += 3; }
+  const S = require('../src/services');
+  const st = S.meterStatuses(db, { condominiumId: c.data.id }).find((x) => x.meter_id === m.data.id);
+  assert.strictEqual(st.status, 'atrasada');
+  assert.deepStrictEqual(st.missing_dates, [addDays(t, -3)]);
+  assert.strictEqual(st.read_today, false);
+  const dash = await admin.get(`/api/dashboard?condominium_id=${c.data.id}`);
+  assert.strictEqual(dash.data.cards.pending_days, 1);
+  assert.ok(dash.data.alerts.some((a) => /sem leitura em 1 dia/.test(a.text)));
+  const y = Number(t.slice(0, 4)); const mo = Number(t.slice(5, 7));
+  const ev = S.calendarEvents(db, { year: y, month: mo, condominiumId: c.data.id });
+  if (addDays(t, -3).slice(0, 7) === t.slice(0, 7)) {
+    assert.ok(ev.some((e) => e.kind === 'pendente' && e.date === addDays(t, -3)));
+  }
+  assert.ok(ev.some((e) => e.kind === 'programada' && e.date === t)); // leitura de hoje esperada
+  await admin.post('/api/readings', { meter_id: m.data.id, reading_date: addDays(t, -3), value: 107.5 });
+  await admin.post('/api/readings', { meter_id: m.data.id, reading_date: t, value: 116 });
+  const st2 = S.meterStatuses(db, { condominiumId: c.data.id }).find((x) => x.meter_id === m.data.id);
+  assert.strictEqual(st2.status, 'em_dia');
+  assert.strictEqual(st2.missing_dates.length, 0);
+  await admin.del(`/api/condominiums/${c.data.id}`);
+});
