@@ -101,6 +101,33 @@ A leitura do **dia 01** fecha o mês anterior **e** é a leitura inicial do novo
 - O fechamento pode ser gravado (e reaberto) pelo administrador; se uma leitura for alterada depois,
   o sistema avisa.
 
+### Dias sem leitura (leitura diária)
+
+Se um dia não tiver leitura, o sistema mostra **"Leitura não realizada"** — ele **nunca inventa** uma
+leitura do medidor — e o dia continua como **pendência** no dashboard e no calendário.
+
+Quando a leitura seguinte é feita, o consumo que o medidor mediu no intervalo é dividido:
+
+```
+20/09 — leitura real: 500,0 m³
+21/09 — Leitura não realizada → consumo ESTIMADO: 3,5 m³ (média diária anterior)
+22/09 — leitura real: 508,0 m³ → consumo REGISTRADO: 4,5 m³ (8,0 medidos − 3,5 estimados)
+Total considerado no intervalo: 8,0 m³ (= 508,0 − 500,0, exatamente o que o medidor mediu)
+```
+
+- **Média diária anterior:** dias com leitura em dias consecutivos, sem ocorrência, nos 30 dias antes
+  do intervalo (mínimo de 3 dias). Sem isso: **"Não há histórico suficiente para estimativa."** — o
+  consumo medido fica todo no dia da leitura real e nada é estimado.
+- A estimativa **nunca aumenta** o consumo: se a média for maior que o medido, ela é limitada para o
+  dia da leitura real não ficar negativo.
+- Dias sem leitura **depois da última leitura** aguardam a próxima leitura (sem estimativa).
+- A estimativa respeita a regra do mês: o dia 01 sem leitura tem o consumo estimado no mês anterior.
+- **Fechamento e relatório** mostram: consumo registrado, consumo estimado, consumo total considerado,
+  dias com leitura e dias sem leitura, com o aviso *"Este período possui N dias sem leitura. O consumo
+  desses dias foi estimado com base na média diária anterior."*
+- **Comparação com meses anteriores** usa a **média diária** (consumo ÷ dias apurados), não o
+  consumo bruto: 20 m³ em 4 dias e 150 m³ em 30 dias são 5 m³/dia nos dois casos (0%).
+
 ### Outras regras
 
 - Totais do dashboard, gráficos e relatórios somam os medidores **principais**. Medidores de
@@ -203,6 +230,7 @@ src/db.js            estrutura do banco
 src/services.js      regras: consumo, programação, alertas, fechamento, gráficos
 src/reports.js       relatório e exportação PDF/Excel/CSV
 src/backup.js        backup automático diário
+src/estimates.js     dias sem leitura e consumo estimado
 src/routes/          API (condomínios, medidores, leituras, concessionária, painel, admin)
 public/              interface (index.html, css, js/pages/*)
 scripts/seed-demo.js dados de demonstração

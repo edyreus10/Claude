@@ -23,6 +23,19 @@ function closesLabel(iso) {
   return MONTHS_SHORT[(m + 10) % 12];
 }
 
+/** Consumo estimado (ou motivo de não haver estimativa) de um dia sem leitura. */
+function estCell(c, unit) {
+  if (c.estimated !== null && c.estimated !== undefined) {
+    return html`<span class="est" title="${c.reason_text}">est. ${fmtNum(c.estimated)} <small>${unit}</small></span>`;
+  }
+  return html`<span class="muted small" title="${c.reason_text}">${c.reason === 'historico' ? 'sem histórico p/ estimar' : 'sem estimativa'}</span>`;
+}
+/** Marca a leitura que veio depois de dias sem leitura (consumo registrado = medido − estimado). */
+function gapMark(c, unit) {
+  if (!c.gap) return '';
+  return html`<span class="gap-mark" title="${`Intervalo de ${c.gap.days + 1} dias: ${fmtNum(c.gap.measured)} ${unit} medidos; ${fmtNum(c.gap.estimated)} ${unit} estimados para os dias sem leitura.`}">*</span>`;
+}
+
 export function readingsTabs(active) {
   return html`<div class="tabs">
     <a href="#/leituras" class="${active === 'hist' ? 'active' : ''}">${icon('table')} Leituras do condomínio</a>
@@ -68,14 +81,20 @@ export async function render(el, ctx) {
 
     <div class="card">
       ${rows.length ? html`<div class="sheet-cards show-mobile-block">${rows.map((r) => html`<div class="sheet-card">
-          <div class="sc-head"><b>${fmtDate(r.date)}</b> <span class="muted">${r.weekday} · ${r.time}${r.responsible ? ` · ${r.responsible}` : ''}</span>
+          <div class="sc-head"><b>${fmtDate(r.date)}</b> <span class="muted">${r.weekday}${r.time ? ` · ${r.time}` : ''}${r.responsible ? ` · ${r.responsible}` : ''}</span>
             ${r.date.slice(8) === '01' ? html`<span class="badge b-blue">fechamento ${closesLabel(r.date)}</span>` : ''}</div>
           ${meters.filter((m) => r.cells[m.id]).map((m) => {
             const c = r.cells[m.id];
+            if (c.missing) {
+              return html`<div class="sc-row sc-missing">${typeDot(m.utility_type)}
+                <span class="sc-name">${colTitle(m)}</span>
+                <span class="sc-val"><span class="badge b-red">Leitura não realizada</span></span>
+                <span class="sc-cons">${estCell(c, m.unit)}</span></div>`;
+            }
             return html`<button type="button" class="sc-row" data-reading="${c.id}">${typeDot(m.utility_type)}
               <span class="sc-name">${colTitle(m)}</span>
               <span class="sc-val">${fmtNum(c.value)} <small>${m.unit}</small></span>
-              <span class="sc-cons">${c.occurrence ? html`<span class="badge b-yellow">${c.occurrence_label}</span>` : c.consumption !== null ? html`+${fmtNum(c.consumption)}` : '—'}</span></button>`;
+              <span class="sc-cons">${c.occurrence ? html`<span class="badge b-yellow">${c.occurrence_label}</span>` : c.registered !== null ? html`+${fmtNum(c.registered)}${gapMark(c, m.unit)}` : '—'}</span></button>`;
           })}
         </div>`)}</div>
         <div class="table-wrap hide-mobile"><table class="table sheet">
@@ -90,16 +109,22 @@ export async function render(el, ctx) {
           ${meters.map((m) => {
             const c = r.cells[m.id];
             if (!c) return html`<td class="num gstart muted">—</td><td class="num muted">—</td>`;
+            if (c.missing) {
+              return html`<td class="num gstart"><span class="badge b-red" title="Não há leitura do medidor neste dia">Leitura não realizada</span></td>
+                <td class="num">${estCell(c, m.unit)}</td>`;
+            }
             return html`<td class="num gstart cell-click" data-reading="${c.id}" title="${c.notes ? `Obs.: ${c.notes}` : 'Ver detalhes'}">${fmtNum(c.value)}${c.notes ? html` ${icon('message-square', 'small')}` : ''}</td>
-              <td class="num cons cell-click" data-reading="${c.id}">${c.occurrence ? html`<span class="badge b-yellow" title="Leitura com ocorrência: consumo não calculado">${c.occurrence_label}</span>` : fmtNum(c.consumption)}</td>`;
+              <td class="num cons cell-click" data-reading="${c.id}">${c.occurrence ? html`<span class="badge b-yellow" title="Leitura com ocorrência: consumo não calculado">${c.occurrence_label}</span>` : html`${fmtNum(c.registered)}${gapMark(c, m.unit)}`}</td>`;
           })}
           <td class="gstart">${r.time}</td><td>${r.responsible || '—'}</td>
         </tr>`)}</tbody>
-        <tfoot><tr><td colspan="2">Soma dos consumos exibidos</td>
-          ${meters.map((m) => html`<td class="gstart"></td><td class="num cons">${fmtNum(totals[m.id])}</td>`)}
+        <tfoot><tr><td colspan="2">Consumo considerado</td>
+          ${meters.map((m) => html`<td class="gstart"></td><td class="num cons">${fmtNum(totals[m.id])}${sheet.estimated_totals && sheet.estimated_totals[m.id] ? html`<div class="est-note">inclui ${fmtNum(sheet.estimated_totals[m.id])} estimado</div>` : ''}</td>`)}
           <td class="gstart" colspan="2"></td></tr></tfoot>
       </table></div>
-      <div class="card-body small muted">${icon('info', 'small')} Toque em uma leitura para ver os detalhes. A leitura do dia 01 fecha o mês anterior e é a leitura inicial do mês.</div>`
+      <div class="card-body small muted">${icon('info', 'small')} Toque em uma leitura para ver os detalhes. A leitura do dia 01 fecha o mês anterior e é a leitura inicial do mês.
+        Nos dias com <b>leitura não realizada</b>, o consumo mostrado é uma <b>estimativa</b> pela média diária anterior (a leitura do medidor nunca é inventada);
+        a leitura seguinte mostra só a parte registrada (*).</div>`
       : emptyState('clipboard-list', 'Nenhuma leitura no período', meters.length ? 'Registre a primeira leitura ou escolha outro período.' : 'Este condomínio ainda não tem medidores cadastrados.',
         meters.length ? html`<a class="btn btn-primary" href="#/leituras/nova">${icon('plus')} Registrar leitura</a>` : html`<a class="btn btn-primary" href="#/condominios/${condoId}">${icon('gauge')} Cadastrar medidores</a>`)}
     </div>`);

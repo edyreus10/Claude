@@ -261,6 +261,8 @@ export async function openReading(readingId, onChanged) {
       <dt>Leitura</dt><dd><b>${fmtNum(r.value)} ${r.unit}</b></dd>
       <dt>Leitura anterior</dt><dd>${r.prev_value !== null ? `${fmtNum(r.prev_value)} ${r.unit} (${fmtDate(r.prev_date)})` : '—'}</dd>
       <dt>Consumo</dt><dd><b style="color:var(--primary)">${r.consumption !== null ? `${fmtNum(r.consumption)} ${r.unit}` : '—'}</b></dd>
+      ${r.interval_days > 1 ? html`<dt>Intervalo</dt><dd>${r.interval_days} dias desde a leitura anterior (houve dia sem leitura).
+        No fechamento, o consumo medido é dividido: estimativa para os dias sem leitura e o restante registrado nesta leitura.</dd>` : ''}
       ${r.occurrence ? html`<dt>Ocorrência</dt><dd><span class="badge b-yellow">${occurrenceLabel(r.occurrence)}</span> ${r.occurrence_note || ''}</dd>` : ''}
       ${r.reading_date.slice(8) === '01' ? html`<dt>Fechamento</dt><dd>Fecha o mês anterior e é a leitura inicial do mês</dd>` : ''}
       <dt>Responsável</dt><dd>${r.responsible || '—'}</dd>

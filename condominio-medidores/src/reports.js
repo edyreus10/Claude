@@ -7,6 +7,7 @@ const { getSettings } = require('./db');
 const { ValidationError, id } = require('./validate');
 const F = require('./format');
 const S = require('./services');
+const E = require('./estimates');
 const { READING_SELECT } = require('./routes/readings');
 const { uploadPath } = require('./storage');
 
@@ -28,12 +29,14 @@ function buildReport(db, q, user) {
     if (!type) throw new ValidationError('Concessionária/tipo inválido.');
   }
   const meters = S.listMeters(db, { condominiumId }).filter((m) => !type || m.utility_type === type.code);
+  const series = new Map(meters.map((m) => [m.id, E.dailySeries(db, m, range.from, range.to)]));
   const summary = meters.map((m) => ({ meter_id: m.id, meter_name: m.name, identifier: m.identifier, kind: m.kind,
     type_name: m.type_name, utility_type: m.utility_type, unit: m.unit, type_color: m.type_color,
     ...S.closingForMeter(db, m.id, range.from, range.to) }))
-    .filter((s) => s.readings_count > 0);
+    .filter((s) => s.readings_count > 0 || s.days_without_reading > 0);
 
-  // Leituras exibidas: a leitura inicial de cada medidor + as leituras do período.
+  // Leituras exibidas: a leitura inicial de cada medidor + as leituras do período
+  // + os dias com "Leitura não realizada" (com o consumo estimado, quando houver).
   // A leitura inicial (normalmente a do dia 01) aparece como referência e o
   // consumo dela pertence ao mês anterior (não entra no total).
   const params = [condominiumId, range.from, range.to];
@@ -41,27 +44,68 @@ function buildReport(db, q, user) {
   if (type) { extra = 'AND m.utility_type = ?'; params.push(type.code); }
   const inPeriod = db.prepare(`${READING_SELECT} WHERE m.condominium_id = ? AND v.reading_date BETWEEN ? AND ? ${extra}
       ORDER BY v.reading_date, v.reading_time, t.sort_order, m.name`).all(...params)
-    .map((x) => ({ ...x, role: x.reading_date === range.to ? 'fechamento' : 'periodo', counted: true }));
+    .map((x) => {
+      // Consumo REGISTRADO desta leitura: se ela fechou um intervalo com dias sem leitura,
+      // a parte estimada para esses dias aparece nas linhas dos próprios dias.
+      const day = (series.get(x.meter_id) || []).find((d) => d.date === x.reading_date);
+      const gapEst = day && day.gap && x.interval_days > 1 ? day.gap.estimated : 0;
+      return { ...x, kind: 'leitura', role: x.reading_date === range.to ? 'fechamento' : 'periodo', counted: true,
+        registered: x.consumption === null ? null : Math.round((x.consumption - gapEst) * 1000) / 1000, estimated: 0,
+        gap: day && day.gap && x.interval_days > 1 ? day.gap : null };
+    });
   const initials = [];
   const initStmt = db.prepare(`${READING_SELECT} WHERE v.meter_id = ? AND v.reading_date = ? AND v.value = ?
       ORDER BY v.reading_time DESC LIMIT 1`);
   for (const sm of summary) {
     if (!sm.initial_date || sm.initial_date >= range.from) continue;
     const r = initStmt.get(sm.meter_id, sm.initial_date, sm.initial_value);
-    if (r) initials.push({ ...r, role: 'inicial', counted: false });
+    if (r) initials.push({ ...r, kind: 'leitura', role: 'inicial', counted: false, registered: null, estimated: 0 });
   }
-  const rows = [...initials, ...inPeriod]
-    .sort((a, b) => (a.reading_date + a.reading_time + a.type_order).localeCompare(b.reading_date + b.reading_time + b.type_order))
+  const missing = [];
+  for (const m of meters) {
+    for (const d of series.get(m.id)) {
+      if (d.kind === 'leitura') continue;
+      missing.push({ kind: 'nao_realizada', role: 'nao_realizada', counted: true, reading_date: d.date, reading_time: '',
+        meter_id: m.id, meter_name: m.name, unit: m.unit, utility_type: m.utility_type, type_name: m.type_name, type_order: m.type_order,
+        kind_meter: m.kind, value: null, consumption: null, registered: null, estimated: d.kind === 'estimado' ? d.estimated : null,
+        estimate_kind: d.kind, reason: d.reason || null, reason_text: d.reason_text, responsible: null, notes: null });
+    }
+  }
+  const rows = [...initials, ...inPeriod, ...missing]
+    .sort((a, b) => (a.reading_date + (a.reading_time || '99') + a.type_order).localeCompare(b.reading_date + (b.reading_time || '99') + b.type_order))
     .map((x) => ({ ...x, weekday: F.weekday(x.reading_date) }));
 
   // Total por tipo: soma dos medidores principais (os de área são submedições).
   const totals = [];
   for (const s of summary) {
     let t = totals.find((x) => x.utility_type === s.utility_type);
-    if (!t) { t = { utility_type: s.utility_type, type_name: s.type_name, unit: s.unit, consumption: 0, area_consumption: 0 }; totals.push(t); }
+    if (!t) { t = { utility_type: s.utility_type, type_name: s.type_name, unit: s.unit, consumption: 0, registered: 0, estimated: 0, area_consumption: 0 }; totals.push(t); }
     if (s.consumption !== null) {
-      if (s.kind === 'principal') t.consumption = Math.round((t.consumption + s.consumption) * 1000) / 1000;
-      else t.area_consumption = Math.round((t.area_consumption + s.consumption) * 1000) / 1000;
+      if (s.kind === 'principal') {
+        t.consumption = Math.round((t.consumption + s.consumption) * 1000) / 1000;
+        t.registered = Math.round((t.registered + s.registered) * 1000) / 1000;
+        t.estimated = Math.round((t.estimated + s.estimated) * 1000) / 1000;
+      } else t.area_consumption = Math.round((t.area_consumption + s.consumption) * 1000) / 1000;
+    }
+  }
+  // Avisos sobre dias sem leitura e estimativas.
+  const estDates = new Set(); const noHist = new Set(); const waiting = new Set();
+  for (const r of missing) {
+    if (r.estimate_kind === 'estimado') estDates.add(r.reading_date);
+    else if (r.reason === 'historico') noHist.add(r.reading_date);
+    else waiting.add(r.reading_date);
+  }
+  const notes = [];
+  if (estDates.size) {
+    notes.push(`Este período possui ${estDates.size} dia${estDates.size > 1 ? 's' : ''} sem leitura. `
+      + 'O consumo desses dias foi estimado com base na média diária anterior.');
+  }
+  if (noHist.size) notes.push(`${noHist.size} dia${noHist.size > 1 ? 's' : ''} sem leitura sem estimativa: ${E.MSG_NO_HISTORY}`);
+  if (waiting.size) notes.push(`${waiting.size} dia${waiting.size > 1 ? 's' : ''} sem leitura aguardando a próxima leitura (ainda sem estimativa).`);
+  for (const sm of summary) {
+    if (sm.days_without_reading) {
+      sm.note = `${sm.type_name} — ${sm.meter_name}: ${sm.days_with_reading} dia(s) com leitura, ${sm.days_without_reading} sem leitura`
+        + `${sm.estimated ? ` (estimado: ${F.fmtNum(sm.estimated)} ${sm.unit})` : ''}.`;
     }
   }
   const settings = getSettings(db);
@@ -70,7 +114,7 @@ function buildReport(db, q, user) {
     condominium: condo, year, month, from: range.from, to: range.to, first: range.first, period_label: periodLabel,
     period_days: F.diffDays(range.first, range.to),
     utility_type: type ? type.code : null, utility_name: type ? type.name : 'Todas',
-    rows, summary, totals,
+    rows, summary, totals, notes, has_estimates: estDates.size > 0,
     generated_at: F.nowLocal(), generated_by: user ? user.name : '',
   };
 }
@@ -85,7 +129,15 @@ const OCC = { troca: 'troca do medidor', zeramento: 'zeramento', correcao: 'corr
 /** Situação da linha no relatório (leitura inicial, fechamento, ocorrência). */
 function rowSituation(r) {
   const parts = [];
+  if (r.kind === 'nao_realizada') {
+    return r.estimate_kind === 'estimado'
+      ? 'Leitura não realizada — consumo ESTIMADO pela média diária anterior'
+      : `Leitura não realizada — ${r.reason_text}`;
+  }
   if (r.role === 'inicial') parts.push('Leitura inicial (consumo do mês anterior)');
+  if (r.gap && r.gap.estimated) {
+    parts.push(`Intervalo de ${r.gap.days + 1} dias: ${F.fmtNum(r.gap.measured)} medidos, ${F.fmtNum(r.gap.estimated)} estimados para os dias sem leitura`);
+  } else if (r.gap) parts.push(`Consumo acumulado de ${r.gap.days + 1} dias (sem estimativa)`);
   if (r.role === 'fechamento') parts.push('Leitura de fechamento');
   if (r.occurrence) parts.push(`Ocorrência: ${OCC[r.occurrence]}${r.occurrence_note ? ` — ${r.occurrence_note}` : ''}`);
   return parts.join(' · ');
@@ -105,19 +157,26 @@ function toCSV(rep) {
   lines.push(['Período', capital(rep.period_label)].map(esc).join(';'));
   lines.push(['Concessionária', rep.utility_name].map(esc).join(';'));
   lines.push('');
-  lines.push(['Data', 'Dia', 'Horário', 'Tipo', 'Medidor', 'Leitura', 'Consumo', 'Unidade', 'Situação', 'Responsável', 'Observação'].join(';'));
+  lines.push(['Data', 'Dia', 'Horário', 'Tipo', 'Medidor', 'Leitura', 'Consumo registrado', 'Consumo estimado', 'Unidade', 'Situação', 'Responsável', 'Observação'].join(';'));
   for (const r of rep.rows) {
-    lines.push([F.fmtDate(r.reading_date), r.weekday, r.reading_time, r.type_name, r.meter_name, num(r.value),
-      r.counted ? num(r.consumption) : '', r.unit, rowSituation(r), r.responsible || '', r.notes || ''].map(esc).join(';'));
+    lines.push([F.fmtDate(r.reading_date), r.weekday, r.reading_time, r.type_name, r.meter_name,
+      r.kind === 'nao_realizada' ? 'Leitura não realizada' : num(r.value),
+      r.counted ? num(r.registered) : '', num(r.estimated || null), r.unit, rowSituation(r), r.responsible || '', r.notes || ''].map(esc).join(';'));
   }
   lines.push('');
-  lines.push(['Resumo por medidor', '', 'Leitura inicial', 'Data inicial', 'Leitura final', 'Data final', 'Consumo', 'Unidade', 'Dias'].join(';'));
+  lines.push(['Resumo por medidor', '', 'Leitura inicial', 'Data inicial', 'Leitura final', 'Data final', 'Consumo registrado', 'Consumo estimado',
+    'Consumo total considerado', 'Unidade', 'Dias com leitura', 'Dias sem leitura', 'Média diária'].join(';'));
   for (const s of rep.summary) {
     lines.push([`${s.type_name} — ${s.meter_name}`, s.kind === 'area' ? 'Área específica' : 'Principal', num(s.initial_value),
-      F.fmtDate(s.initial_date), num(s.final_value), F.fmtDate(s.final_date), num(s.consumption), s.unit, s.days].map(esc).join(';'));
+      F.fmtDate(s.initial_date), num(s.final_value), F.fmtDate(s.final_date), num(s.registered), num(s.estimated), num(s.consumption), s.unit,
+      s.days_with_reading, s.days_without_reading, num(s.daily_avg)].map(esc).join(';'));
   }
   lines.push('');
-  for (const t of rep.totals) lines.push([`CONSUMO TOTAL DO PERÍODO — ${t.type_name}`, num(t.consumption), t.unit].map(esc).join(';'));
+  for (const t of rep.totals) {
+    lines.push([`CONSUMO TOTAL DO PERÍODO — ${t.type_name}`, num(t.consumption), t.unit,
+      t.estimated ? `inclui ${String(t.estimated).replace('.', ',')} ${t.unit} estimado` : ''].map(esc).join(';'));
+  }
+  for (const n of rep.notes) lines.push(esc(n));
   return '﻿' + lines.join('\r\n') + '\r\n';
 }
 
@@ -128,19 +187,19 @@ async function toXLSX(rep) {
   wb.created = new Date();
   const ws = wb.addWorksheet('Leituras', { views: [{ state: 'frozen', ySplit: 6 }], pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1 } });
   ws.columns = [
-    { width: 12 }, { width: 10 }, { width: 9 }, { width: 18 }, { width: 26 }, { width: 14 }, { width: 13 }, { width: 8 }, { width: 20 }, { width: 34 }, { width: 36 },
+    { width: 12 }, { width: 10 }, { width: 9 }, { width: 18 }, { width: 26 }, { width: 20 }, { width: 13 }, { width: 13 }, { width: 8 }, { width: 20 }, { width: 30 }, { width: 44 },
   ];
   const brand = 'FF0F766E';
-  ws.mergeCells('A1:K1');
+  ws.mergeCells('A1:L1');
   ws.getCell('A1').value = `${rep.condominium.name} — Relatório de leituras e consumo`;
   ws.getCell('A1').font = { size: 15, bold: true, color: { argb: brand } };
   ws.getCell('A2').value = `Período: ${capital(rep.period_label)}   ·   Concessionária: ${rep.utility_name}`;
-  ws.mergeCells('A2:K2');
+  ws.mergeCells('A2:L2');
   ws.getCell('A3').value = `Gerado em ${F.fmtDateTime(rep.generated_at)} por ${rep.generated_by}   ·   ${rep.org_name}`;
-  ws.mergeCells('A3:K3');
+  ws.mergeCells('A3:L3');
   ws.getCell('A3').font = { size: 9, color: { argb: 'FF64748B' } };
 
-  const header = ['Data', 'Dia', 'Horário', 'Tipo', 'Medidor', 'Leitura', 'Consumo', 'Unid.', 'Responsável', 'Observação', 'Situação'];
+  const header = ['Data', 'Dia', 'Horário', 'Tipo', 'Medidor', 'Leitura', 'Consumo registrado', 'Consumo estimado', 'Unid.', 'Responsável', 'Observação', 'Situação'];
   const hr = ws.getRow(6);
   hr.values = header;
   hr.eachCell((c) => {
@@ -152,14 +211,17 @@ async function toXLSX(rep) {
   let rowIdx = 7;
   for (const r of rep.rows) {
     const row = ws.getRow(rowIdx++);
-    row.values = [F.parseISODate(r.reading_date), r.weekday, r.reading_time, r.type_name, r.meter_name, r.value,
-      r.counted ? r.consumption : null, r.unit, r.responsible || '', r.notes || '', rowSituation(r)];
+    row.values = [F.parseISODate(r.reading_date), r.weekday, r.reading_time, r.type_name, r.meter_name,
+      r.kind === 'nao_realizada' ? 'Leitura não realizada' : r.value,
+      r.counted ? r.registered : null, r.estimated || null, r.unit, r.responsible || '', r.notes || '', rowSituation(r)];
     row.getCell(1).numFmt = 'dd/mm/yyyy';
     row.getCell(6).numFmt = '#,##0.0##';
     row.getCell(7).numFmt = '#,##0.0##';
+    row.getCell(8).numFmt = '#,##0.0##';
+    if (r.kind === 'nao_realizada') { row.getCell(6).font = { italic: true, color: { argb: 'FFB91C1C' } }; row.getCell(8).font = { italic: true, color: { argb: 'FFB45309' } }; }
     if (rowIdx % 2 === 0) row.eachCell({ includeEmpty: true }, (c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } }; });
   }
-  if (rep.rows.length) ws.autoFilter = { from: 'A6', to: `K${rowIdx - 1}` };
+  if (rep.rows.length) ws.autoFilter = { from: 'A6', to: `L${rowIdx - 1}` };
   rowIdx++;
   for (const t of rep.totals) {
     const row = ws.getRow(rowIdx++);
@@ -167,26 +229,29 @@ async function toXLSX(rep) {
     ws.mergeCells(`A${row.number}:F${row.number}`);
     row.getCell(7).value = t.consumption;
     row.getCell(7).numFmt = '#,##0.0##';
-    row.getCell(8).value = t.unit;
+    row.getCell(9).value = t.unit;
+    if (t.estimated) row.getCell(10).value = `inclui ${F.fmtNum(t.estimated)} ${t.unit} estimado`;
     row.font = { bold: true };
   }
+  for (const n of rep.notes) { const row = ws.getRow(rowIdx++); row.getCell(1).value = n; ws.mergeCells(`A${row.number}:L${row.number}`); row.font = { italic: true, color: { argb: 'FFB45309' } }; }
 
   const rs = wb.addWorksheet('Resumo');
-  rs.columns = [{ width: 18 }, { width: 28 }, { width: 16 }, { width: 14 }, { width: 13 }, { width: 14 }, { width: 13 }, { width: 13 }, { width: 8 }, { width: 7 }];
+  rs.columns = [{ width: 18 }, { width: 28 }, { width: 16 }, { width: 14 }, { width: 13 }, { width: 14 }, { width: 13 }, { width: 13 }, { width: 13 }, { width: 13 }, { width: 8 }, { width: 11 }, { width: 11 }, { width: 11 }];
   rs.getCell('A1').value = `Resumo — ${rep.condominium.name} — ${capital(rep.period_label)}`;
   rs.getCell('A1').font = { size: 14, bold: true, color: { argb: brand } };
   const rh = rs.getRow(3);
-  rh.values = ['Tipo', 'Medidor', 'Classificação', 'Data inicial', 'Leitura inicial', 'Data final', 'Leitura final', 'Consumo', 'Unid.', 'Dias'];
+  rh.values = ['Tipo', 'Medidor', 'Classificação', 'Data inicial', 'Leitura inicial', 'Data final', 'Leitura final', 'Consumo registrado',
+    'Consumo estimado', 'Consumo total', 'Unid.', 'Dias com leitura', 'Dias sem leitura', 'Média diária'];
   rh.eachCell((c) => { c.font = { bold: true, color: { argb: 'FFFFFFFF' } }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: brand } }; });
   let i = 4;
   for (const s of rep.summary) {
     const row = rs.getRow(i++);
     row.values = [s.type_name, s.meter_name, s.kind === 'area' ? 'Área específica' : 'Principal',
       s.initial_date ? F.parseISODate(s.initial_date) : null, s.initial_value, s.final_date ? F.parseISODate(s.final_date) : null,
-      s.final_value, s.consumption, s.unit, s.days];
+      s.final_value, s.registered, s.estimated, s.consumption, s.unit, s.days_with_reading, s.days_without_reading, s.daily_avg];
     row.getCell(4).numFmt = 'dd/mm/yyyy';
     row.getCell(6).numFmt = 'dd/mm/yyyy';
-    [5, 7, 8].forEach((c) => { row.getCell(c).numFmt = '#,##0.0##'; });
+    [5, 7, 8, 9, 10, 14].forEach((c) => { row.getCell(c).numFmt = '#,##0.0##'; });
   }
   return wb.xlsx.writeBuffer();
 }
@@ -305,32 +370,44 @@ function toPDF(rep) {
     const u = (v, unit) => (v === null || v === undefined ? '—' : `${F.fmtNum(v)} ${unit}`);
     const sw = W;
     table('Resumo por medidor', [
-      { key: 'meter', label: 'MEDIDOR', w: sw * 0.30 },
-      { key: 'initial', label: 'LEITURA INICIAL', w: sw * 0.20, align: 'right' },
-      { key: 'final', label: 'LEITURA FINAL', w: sw * 0.20, align: 'right' },
-      { key: 'days', label: 'DIAS', w: sw * 0.08, align: 'right' },
-      { key: 'consumption', label: 'CONSUMO', w: sw * 0.22, align: 'right', bold: true },
+      { key: 'meter', label: 'MEDIDOR', w: sw * 0.24 },
+      { key: 'initial', label: 'INICIAL', w: sw * 0.15, align: 'right' },
+      { key: 'final', label: 'FINAL', w: sw * 0.15, align: 'right' },
+      { key: 'registered', label: 'REGISTR.', w: sw * 0.12, align: 'right' },
+      { key: 'estimated', label: 'ESTIMADO', w: sw * 0.11, align: 'right' },
+      { key: 'consumption', label: 'TOTAL', w: sw * 0.13, align: 'right', bold: true },
+      { key: 'days', label: 'DIAS C/S', w: sw * 0.10, align: 'right' },
     ], rep.summary.map((s) => ({
       meter: `${s.type_name} — ${s.meter_name}${s.kind === 'area' ? ' (área)' : ''}`,
-      initial: s.initial_value !== null ? `${u(s.initial_value, s.unit)} (${F.fmtDate(s.initial_date).slice(0, 5)})` : '—',
-      final: s.final_value !== null ? `${u(s.final_value, s.unit)} (${F.fmtDate(s.final_date).slice(0, 5)})` : '—',
-      days: s.days, consumption: u(s.consumption, s.unit),
+      initial: s.initial_value !== null ? `${F.fmtNum(s.initial_value)} (${F.fmtDate(s.initial_date).slice(0, 5)})` : '—',
+      final: s.final_value !== null ? `${F.fmtNum(s.final_value)} (${F.fmtDate(s.final_date).slice(0, 5)})` : '—',
+      registered: u(s.registered, s.unit), estimated: s.estimated ? u(s.estimated, s.unit) : '—',
+      days: `${s.days_with_reading} / ${s.days_without_reading}`, consumption: u(s.consumption, s.unit),
     })));
 
     table('Leituras do período', [
       { key: 'date', label: 'DATA', w: W * 0.12 },
       { key: 'weekday', label: 'DIA', w: W * 0.09 },
-      { key: 'meter', label: 'MEDIDOR', w: W * 0.27 },
-      { key: 'value', label: 'LEITURA', w: W * 0.15, align: 'right' },
+      { key: 'meter', label: 'MEDIDOR', w: W * 0.25 },
+      { key: 'value', label: 'LEITURA', w: W * 0.17, align: 'right' },
       { key: 'consumption', label: 'CONSUMO', w: W * 0.14, align: 'right', bold: true },
       { key: 'time', label: 'HORA', w: W * 0.08, align: 'center' },
       { key: 'responsible', label: 'RESPONSÁVEL', w: W * 0.15 },
     ], rep.rows.map((r) => ({
       date: F.fmtDate(r.reading_date), weekday: r.weekday, meter: `${r.type_name} — ${r.meter_name}`,
-      value: u(r.value, r.unit),
-      consumption: r.role === 'inicial' ? 'leitura inicial' : r.occurrence ? ({ troca: 'troca', zeramento: 'zeramento', correcao: 'correção', outra: 'ocorrência' })[r.occurrence] : u(r.consumption, r.unit),
-      time: r.reading_time, responsible: r.responsible, _muted: r.role === 'inicial' || !!r.occurrence,
+      value: r.kind === 'nao_realizada' ? 'não realizada' : u(r.value, r.unit),
+      consumption: r.kind === 'nao_realizada' ? (r.estimated !== null ? `${u(r.estimated, r.unit)} (estimado)` : 'sem estimativa')
+        : r.role === 'inicial' ? 'leitura inicial'
+          : r.occurrence ? ({ troca: 'troca', zeramento: 'zeramento', correcao: 'correção', outra: 'ocorrência' })[r.occurrence]
+            : `${u(r.registered, r.unit)}${r.gap && r.gap.estimated ? '*' : ''}`,
+      time: r.reading_time, responsible: r.responsible,
+      _muted: r.role === 'inicial' || !!r.occurrence || r.kind === 'nao_realizada',
     })));
+    if (rep.rows.some((r) => r.gap && r.gap.estimated)) {
+      doc.font('Helvetica-Oblique').fontSize(7.5).fillColor(C.muted)
+        .text('* Leitura após dias sem leitura: consumo registrado = medido no intervalo − consumo estimado dos dias sem leitura.', L, y - 10, { width: W });
+      y += 10;
+    }
     doc.font('Helvetica-Oblique').fontSize(7.5).fillColor(C.muted)
       .text('A leitura do dia 01 fecha o mês anterior e é a leitura inicial do mês: o consumo dela pertence ao mês anterior e não entra no total.', L, y - 10, { width: W });
     y += 6;
@@ -345,11 +422,16 @@ function toPDF(rep) {
       doc.font('Helvetica').fontSize(10).fillColor(C.text).text('Sem consumo no período.', L + 14, ty);
     }
     for (const t of rep.totals) {
-      doc.font('Helvetica').fontSize(10).fillColor(C.text).text(t.type_name, L + 14, ty, { width: W / 2 });
+      doc.font('Helvetica').fontSize(10).fillColor(C.text).text(t.estimated ? `${t.type_name} (inclui ${F.fmtNum(t.estimated)} ${t.unit} estimado)` : t.type_name, L + 14, ty, { width: W / 2 });
       doc.font('Helvetica-Bold').fontSize(12).text(`${F.fmtNum(t.consumption)} ${t.unit}`, L + W / 2, ty - 1, { width: W / 2 - 14, align: 'right' });
       ty += 20;
     }
     y += boxH + 8;
+    for (const n of rep.notes) {
+      if (y + 24 > bottom()) { doc.addPage(); y = doc.page.margins.top; }
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#b45309').text(n, L, y, { width: W });
+      y = doc.y + 4;
+    }
     if (rep.totals.some((t) => t.area_consumption)) {
       doc.font('Helvetica-Oblique').fontSize(7.5).fillColor(C.muted)
         .text('O total considera os medidores principais. Medidores de áreas específicas aparecem no resumo por medidor.', L, y, { width: W });

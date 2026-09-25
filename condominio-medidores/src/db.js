@@ -214,7 +214,7 @@ function addColumn(db, table, name, def) {
 }
 
 /** Atualiza bancos criados por versões anteriores (sem perder dados). */
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 function migrate(db) {
   const version = db.pragma('user_version', { simple: true });
   addColumn(db, 'readings', 'prev_value', 'REAL');
@@ -226,6 +226,11 @@ function migrate(db) {
   addColumn(db, 'readings', 'occurrence_note', 'TEXT');
   addColumn(db, 'condominiums', 'default_frequency_days', 'INTEGER NOT NULL DEFAULT 1');
   addColumn(db, 'audit_logs', 'details', 'TEXT');
+  // v4: fechamento separa consumo registrado e estimado (dias sem leitura).
+  addColumn(db, 'monthly_closings', 'consumption_registered', 'REAL');
+  addColumn(db, 'monthly_closings', 'consumption_estimated', 'REAL');
+  addColumn(db, 'monthly_closings', 'days_with_reading', 'INTEGER');
+  addColumn(db, 'monthly_closings', 'days_without_reading', 'INTEGER');
   db.exec(`CREATE INDEX IF NOT EXISTS idx_meters_type ON meters(utility_type);
     CREATE INDEX IF NOT EXISTS idx_ucr_next ON utility_company_readings(next_reading_date);
     CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs(user_id, action);

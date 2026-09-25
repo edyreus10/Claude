@@ -135,8 +135,10 @@ test('edição recalcula consumo e fica registrada na auditoria', async () => {
 test('histórico em formato de planilha', async () => {
   const s = await admin.get(`/api/readings/sheet?condominium_id=${condoId}`);
   assert.strictEqual(s.data.meters.length, 2);
-  assert.strictEqual(s.data.rows.length, 2);
-  const row = s.data.rows[0];
+  const reais = s.data.rows.filter((r) => Object.values(r.cells).some((c) => !c.missing));
+  assert.strictEqual(reais.length, 2); // 2 datas com leitura; as demais aparecem como "Leitura não realizada"
+  assert.ok(s.data.rows.filter((r) => Object.values(r.cells).some((c) => c.missing)).length > 0);
+  const row = reais[0];
   assert.strictEqual(row.cells[aguaId].consumption, 19);
   assert.strictEqual(row.cells[gasId].consumption, 148);
   assert.ok(row.weekday);
@@ -238,7 +240,9 @@ test('fechamento: leitura do dia 01 fecha o mês anterior e abre o novo (sem con
   assert.strictEqual(item.initial_value, 160);
   assert.strictEqual(item.consumption, 100);
   const rep = await admin.get(`/api/reports?condominium_id=${condoId}&year=2026&month=6&utility_type=agua`);
-  const rows = rep.data.rows.filter((r) => r.meter_id === mid);
+  const rows = rep.data.rows.filter((r) => r.meter_id === mid && r.kind === 'leitura');
+  // Os dias entre as leituras aparecem como "Leitura não realizada" (sem histórico suficiente → sem estimativa).
+  assert.ok(rep.data.rows.some((r) => r.meter_id === mid && r.kind === 'nao_realizada' && r.reason === 'historico'));
   assert.deepStrictEqual(rows.map((r) => [r.reading_date, r.role, r.counted]),
     [['2026-06-01', 'inicial', false], ['2026-06-08', 'periodo', true], ['2026-07-01', 'fechamento', true]]);
   const sm = rep.data.summary.find((x) => x.meter_id === mid);
@@ -339,7 +343,7 @@ test('leitura diária: padrão, dias sem leitura, calendário e frequência dife
   assert.strictEqual(st.read_today, false);
   const dash = await admin.get(`/api/dashboard?condominium_id=${c.data.id}`);
   assert.strictEqual(dash.data.cards.pending_days, 1);
-  assert.ok(dash.data.alerts.some((a) => /sem leitura em 1 dia/.test(a.text)));
+  assert.ok(dash.data.alerts.some((a) => /leitura não realizada em 1 dia/.test(a.text)));
   const y = Number(t.slice(0, 4)); const mo = Number(t.slice(5, 7));
   const ev = S.calendarEvents(db, { year: y, month: mo, condominiumId: c.data.id });
   if (addDays(t, -3).slice(0, 7) === t.slice(0, 7)) {

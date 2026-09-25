@@ -442,3 +442,16 @@ pre.json { background: var(--surface-2); border: 1px solid var(--border); border
   .page-actions > div[style*="min-width"] { min-width: 0 !important; width: 100%; }
   .closing-card .card-head { flex-wrap: wrap; }
 }
+
+/* Dias sem leitura e consumo estimado */
+.est { color: var(--warning); font-style: italic; font-weight: 600; white-space: nowrap; }
+.est-note { font-size: 11px; font-weight: 600; color: var(--warning); }
+.gap-mark { color: var(--warning); font-weight: 700; margin-left: 2px; cursor: help; }
+.sc-missing { cursor: default; }
+.sc-missing .badge { white-space: nowrap; }
+.est-box { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.closing-card .rows-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 10px; }
+.closing-card .rows .est-cell { background: var(--warning-soft); }
+.closing-card .rows .est-cell .v { color: var(--warning); }
+.closing-card .rows .miss-cell .v { color: var(--danger); }
+@media (max-width: 640px) { .closing-card .rows-4 { grid-template-columns: 1fr 1fr; } }

@@ -6,6 +6,7 @@ const { ValidationError, str, id, number, oneOf } = require('../validate');
 const { recalcMeter } = require('../db');
 const F = require('../format');
 const S = require('../services');
+const E = require('../estimates');
 
 const READING_SELECT = `
   SELECT v.*, m.name AS meter_name, m.unit, m.utility_type, m.kind, m.condominium_id,
@@ -143,18 +144,49 @@ module.exports = (db) => {
         rows.push(row);
       }
       row.cells[rd.meter_id] = {
-        id: rd.id, value: rd.value, consumption: rd.consumption, is_reset: rd.is_reset, occurrence: rd.occurrence,
+        id: rd.id, value: rd.value, consumption: rd.consumption, registered: rd.consumption, is_reset: rd.is_reset, occurrence: rd.occurrence,
         closes_previous_month: rd.reading_date.slice(8) === '01',
         time: rd.reading_time, responsible: rd.responsible, notes: rd.notes,
       };
     }
-    rows.sort((a, b) => (a.date === b.date ? a.time.localeCompare(b.time) : a.date < b.date ? 1 : -1));
-    const totals = {};
-    for (const m of meters) {
-      totals[m.id] = readings.filter((x) => x.meter_id === m.id && x.consumption !== null)
-        .reduce((a, x) => Math.round((a + x.consumption) * 1000) / 1000, 0);
+    // Medidores diários: dias com "Leitura não realizada" (e o consumo estimado, se houver).
+    const today = F.todayISO();
+    for (const m of meters.filter((x) => Number(x.frequency_days) === 1)) {
+      const first = db.prepare('SELECT MIN(reading_date) d FROM readings WHERE meter_id = ?').get(m.id).d;
+      if (!first) continue;
+      const from = F.isValidISODate(req.query.from) && req.query.from > first ? req.query.from : first;
+      const to = F.isValidISODate(req.query.to) && req.query.to < today ? req.query.to : today;
+      if (from > to) continue;
+      for (const d of E.dailySeries(db, m, from, to, today)) {
+        if (d.kind === 'leitura') {
+          if (d.gap && d.gap.estimated) {
+            const row = rows.find((x) => x.date === d.date && x.cells[m.id]);
+            if (row) Object.assign(row.cells[m.id], { registered: Math.round((row.cells[m.id].consumption - d.gap.estimated) * 1000) / 1000, gap: d.gap });
+          }
+          continue;
+        }
+        let row = rows.find((x) => x.date === d.date && !x.cells[m.id]);
+        if (!row) { row = { date: d.date, weekday: F.weekday(d.date), time: '', responsible: '', cells: {} }; rows.push(row); }
+        row.cells[m.id] = { missing: true, estimated: d.kind === 'estimado' ? d.estimated : null, reason: d.reason || null, reason_text: d.reason_text,
+          closes_previous_month: d.date.slice(8) === '01' };
+      }
     }
-    res.json({ meters, rows, totals });
+    rows.sort((a, b) => (a.date === b.date ? (a.time || '').localeCompare(b.time || '') : a.date < b.date ? 1 : -1));
+    // Totais do período: consumo registrado + estimado (sem contar duas vezes).
+    const totals = {};
+    const estimatedTotals = {};
+    for (const m of meters) {
+      let reg = 0; let est = 0;
+      for (const row of rows) {
+        const c = row.cells[m.id];
+        if (!c) continue;
+        if (c.missing) est += c.estimated || 0;
+        else if (c.registered !== null) reg += c.registered;
+      }
+      totals[m.id] = Math.round((reg + est) * 1000) / 1000;
+      estimatedTotals[m.id] = Math.round(est * 1000) / 1000;
+    }
+    res.json({ meters, rows, totals, estimated_totals: estimatedTotals });
   });
 
   r.get('/:id', (req, res) => {

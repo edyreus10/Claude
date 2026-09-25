@@ -18,7 +18,7 @@ export async function render(el, ctx) {
 
   const consCard = (c) => stat(c.icon, `t-${c.utility_type}`, `Consumo de ${c.name.toLowerCase()}`,
       html`${fmtNum(c.consumption)} <small>${c.unit}</small>`,
-      html`${capital(d.month_name)}${c.previous !== null ? html` · mês anterior ${fmtNum(c.previous)} ${c.unit}` : ''}`,
+      html`${capital(d.month_name)}${c.estimated ? html` · inclui ${fmtNum(c.estimated)} estimado` : ''}${c.previous !== null ? html` · mês anterior ${fmtNum(c.previous)} ${c.unit}` : ''}`,
       'relatorios/graficos');
 
   mount(el, html`
@@ -32,7 +32,7 @@ export async function render(el, ctx) {
 
     <div class="grid stats section">
       ${stat('building', '', 'Condomínios ativos', d.cards.condominiums, `${d.cards.meters} medidores`, 'condominios')}
-      ${stat('clock-alert', d.cards.pending ? 't-danger' : 't-success', 'Leituras pendentes', d.cards.pending, d.cards.pending ? (d.cards.pending_days ? `${d.cards.pending_days} dia(s) sem leitura` : 'atrasadas ou sem leitura') : 'nenhuma pendência', 'calendario')}
+      ${stat('clock-alert', d.cards.pending ? 't-danger' : 't-success', 'Leituras pendentes', d.cards.pending, d.cards.pending ? (d.cards.pending_days ? `${d.cards.pending_days} dia(s) com leitura não realizada` : 'atrasadas ou sem leitura') : 'nenhuma pendência', 'calendario')}
       ${stat('clipboard-check', 't-success', 'Leituras no mês', d.cards.readings_month, capital(d.month_name), 'leituras')}
       ${stat('calendar-clock', 't-warning', 'Próximas leituras', d.cards.upcoming, 'inclui as leituras de hoje', 'calendario')}
     </div>

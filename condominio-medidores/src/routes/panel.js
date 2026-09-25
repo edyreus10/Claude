@@ -6,6 +6,7 @@ const { audit } = require('../audit');
 const { ValidationError, id, str } = require('../validate');
 const F = require('../format');
 const S = require('../services');
+const E = require('../estimates');
 
 function parseYearMonth(q) {
   const year = Number(q.year);
@@ -43,25 +44,26 @@ function buildClosing(db, condominiumId, year, month, compareMonths = 6) {
     if (!m.active && !cur.readings_count && !saved.has(m.id)) continue;
     const previous = historyData.map((h) => {
       const x = h.map.get(m.id);
-      return { year: h.year, month: h.month, label: h.label, consumption: x && x.consumption !== null ? Math.round(x.consumption * 1000) / 1000 : null };
+      return { year: h.year, month: h.month, label: h.label,
+        consumption: x && x.consumption !== null ? x.consumption : null, estimated: x ? x.estimated : 0,
+        covered_days: x ? x.covered_days : 0, daily_avg: x ? x.daily_avg : null };
     });
-    const valid = previous.filter((p) => p.consumption !== null);
-    const avg = valid.length ? valid.reduce((a, p) => a + p.consumption, 0) / valid.length : null;
-    const last = previous[previous.length - 1];
+    // Comparação pela MÉDIA DIÁRIA (os meses podem ter quantidades diferentes de dias com leitura).
+    const cmp = E.compareDaily(cur, previous);
     items.push({
       meter_id: m.id, meter_name: m.name, identifier: m.identifier, unit: m.unit, kind: m.kind, active: m.active,
       utility_type: m.utility_type, type_name: m.type_name, type_icon: m.type_icon, type_color: m.type_color,
       ...cur,
       previous,
-      average: avg !== null ? Math.round(avg * 10) / 10 : null,
-      vs_average_pct: avg && cur.consumption !== null ? Math.round(((cur.consumption - avg) / avg) * 100) : null,
-      vs_last_pct: last && last.consumption && cur.consumption !== null ? Math.round(((cur.consumption - last.consumption) / last.consumption) * 100) : null,
+      average_daily: cmp.average_daily,
+      vs_average_pct: cmp.vs_average_pct,
+      vs_last_pct: cmp.vs_last_pct,
       saved: saved.get(m.id) || null,
       // Leituras alteradas depois do fechamento gravado?
       changed_since_closing: (() => {
         const sv = saved.get(m.id);
         if (!sv) return false;
-        return sv.consumption !== cur.consumption || sv.initial_value !== cur.initial_value || sv.final_value !== cur.final_value
+        return sv.consumption !== cur.consumption || (sv.consumption_estimated ?? 0) !== cur.estimated || sv.initial_value !== cur.initial_value || sv.final_value !== cur.final_value
           || sv.initial_date !== cur.initial_date || sv.final_date !== cur.final_date;
       })(),
     });
@@ -129,7 +131,7 @@ module.exports = (db) => {
           const c = cons.find((x) => x.utility_type === t.code);
           const p = consPrev.find((x) => x.utility_type === t.code);
           return { utility_type: t.code, name: t.name, unit: t.unit, icon: t.icon, color: t.color,
-            consumption: c ? c.consumption : 0, previous: p ? p.consumption : null };
+            consumption: c ? c.consumption : 0, estimated: c ? c.estimated : 0, previous: p ? p.consumption : null };
         }),
       upcoming: groups,
       alerts: S.alerts(db, { condominiumId, today }),
@@ -169,18 +171,23 @@ module.exports = (db) => {
     const notes = str(req.body.notes, 1000);
     const now = F.nowLocal();
     const up = db.prepare(`INSERT INTO monthly_closings (condominium_id,meter_id,year,month,initial_date,initial_value,final_date,final_value,
-        consumption,days,notes,closed_by,closed_at) VALUES (@cid,@meter_id,@year,@month,@initial_date,@initial_value,@final_date,@final_value,
-        @consumption,@days,@notes,@uid,@now)
+        consumption,consumption_registered,consumption_estimated,days_with_reading,days_without_reading,days,notes,closed_by,closed_at)
+        VALUES (@cid,@meter_id,@year,@month,@initial_date,@initial_value,@final_date,@final_value,
+        @consumption,@registered,@estimated,@days_with_reading,@days_without_reading,@days,@notes,@uid,@now)
         ON CONFLICT(meter_id,year,month) DO UPDATE SET initial_date=excluded.initial_date,initial_value=excluded.initial_value,
-        final_date=excluded.final_date,final_value=excluded.final_value,consumption=excluded.consumption,days=excluded.days,
+        final_date=excluded.final_date,final_value=excluded.final_value,consumption=excluded.consumption,
+        consumption_registered=excluded.consumption_registered,consumption_estimated=excluded.consumption_estimated,
+        days_with_reading=excluded.days_with_reading,days_without_reading=excluded.days_without_reading,days=excluded.days,
         notes=excluded.notes,closed_by=excluded.closed_by,closed_at=excluded.closed_at`);
     db.transaction(() => {
       for (const i of withData) {
         up.run({ cid: condominiumId, meter_id: i.meter_id, year, month, initial_date: i.initial_date, initial_value: i.initial_value,
-          final_date: i.final_date, final_value: i.final_value, consumption: i.consumption, days: i.days, notes, uid: req.user.id, now });
+          final_date: i.final_date, final_value: i.final_value, consumption: i.consumption, registered: i.registered, estimated: i.estimated,
+          days_with_reading: i.days_with_reading, days_without_reading: i.days_without_reading, days: i.days, notes, uid: req.user.id, now });
       }
     })();
-    const resume = withData.map((i) => `${i.type_name} — ${i.meter_name}: ${F.fmtNum(i.consumption)} ${i.unit}`).join('; ');
+    const resume = withData.map((i) => `${i.type_name} — ${i.meter_name}: ${F.fmtNum(i.consumption)} ${i.unit}`
+      + `${i.estimated ? ` (${F.fmtNum(i.registered)} registrado + ${F.fmtNum(i.estimated)} estimado)` : ''}`).join('; ');
     audit(db, req.user, { action: c.is_closed ? 'update' : 'create', entity: 'monthly_closing', condominiumId,
       description: `${req.user.name} ${c.is_closed ? 'atualizou o fechamento' : 'fechou o mês'} de ${F.monthName(month)}/${year} do condomínio `
         + `${c.condominium.name} (${resume}).`,

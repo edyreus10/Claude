@@ -5,6 +5,7 @@
  */
 const { getSettings } = require('./db');
 const F = require('./format');
+const E = require('./estimates');
 
 const METER_SELECT = `
   SELECT m.*, c.name AS condominium_name, c.status AS condominium_status,
@@ -111,72 +112,83 @@ function meterStatuses(db, { condominiumId, today = F.todayISO() } = {}) {
   });
 }
 
-/** Consumo somado por medidor em um intervalo de datas. */
-function consumptionByMeter(db, from, to, condominiumId) {
-  const params = [from, to];
-  let extra = '';
-  if (condominiumId) { extra = 'AND m.condominium_id = ?'; params.push(condominiumId); }
-  const rows = db.prepare(`SELECT v.meter_id, SUM(v.consumption) AS consumption, COUNT(*) AS readings
-      FROM v_readings v JOIN meters m ON m.id = v.meter_id
-      WHERE v.reading_date BETWEEN ? AND ? ${extra} GROUP BY v.meter_id`).all(...params);
-  const map = new Map();
-  for (const r of rows) map.set(r.meter_id, r);
-  return map;
-}
-
-/**
- * Consumo total por tipo (água, gás, energia...) em um intervalo.
- * Considera apenas medidores PRINCIPAIS para não somar em dobro os
- * medidores de áreas específicas (que normalmente são submedições).
- */
-function consumptionByType(db, from, to, condominiumId) {
-  const params = [from, to];
-  let extra = '';
-  if (condominiumId) { extra = 'AND m.condominium_id = ?'; params.push(condominiumId); }
-  return db.prepare(`SELECT m.utility_type, t.name, t.unit, t.color, t.icon,
-        ROUND(SUM(v.consumption), 3) AS consumption
-      FROM v_readings v JOIN meters m ON m.id = v.meter_id
-      JOIN condominiums c ON c.id = m.condominium_id
-      JOIN utility_types t ON t.code = m.utility_type
-      WHERE v.reading_date BETWEEN ? AND ? AND m.kind = 'principal' AND c.status = 'active' ${extra}
-      GROUP BY m.utility_type ORDER BY t.sort_order`).all(...params);
-}
-
 /**
  * Fechamento de um medidor em um período de apuração (from..to).
  * Use closingForMonth para meses: o período vai de 02/MM a 01/(MM+1), pois a
  * leitura do dia 01 fecha o mês anterior e é a leitura inicial do mês.
+ *
+ * consumption = consumo total considerado = registrado + estimado (ver estimates.js).
  */
-function closingForMeter(db, meterId, from, to) {
+function closingForMeter(db, meterId, from, to, today = F.todayISO()) {
+  const meter = db.prepare('SELECT id, frequency_days FROM meters WHERE id = ?').get(meterId);
   const rows = db.prepare(`SELECT * FROM v_readings WHERE meter_id = ? AND reading_date BETWEEN ? AND ?
                            ORDER BY reading_date, reading_time, id`).all(meterId, from, to);
+  const sum = E.summarize(E.dailySeries(db, meter, from, to, today));
+  const base = {
+    registered: sum.registered, estimated: sum.estimated,
+    days_with_reading: sum.days_with_reading, days_without_reading: sum.days_without_reading,
+    days_estimated: sum.days_estimated, days_no_estimate: sum.days_no_estimate, days_no_history: sum.days_no_history,
+    days_waiting: sum.days_waiting, covered_days: sum.covered_days, daily_avg: sum.daily_avg,
+    missing_dates: sum.missing_dates, messages: E.estimateMessages(sum),
+  };
   if (!rows.length) {
-    return { readings_count: 0, initial_date: null, initial_value: null, final_date: null,
-      final_value: null, consumption: null, days: null, has_reset: false };
+    return { readings_count: 0, initial_date: null, initial_value: null, final_date: null, final_value: null,
+      consumption: sum.covered_days ? sum.total : null, days: null, has_reset: false, ...base };
   }
   const first = rows[0];
   const last = rows[rows.length - 1];
-  // Leitura inicial = leitura imediatamente anterior ao período (normalmente a
-  // do dia 01). O consumo da primeira leitura do período começa a contar dela.
+  // Leitura inicial = última leitura REAL antes do período (normalmente a do dia 01).
   const usePrev = first.prev_value !== null && !first.is_reset;
   const initialDate = usePrev ? first.prev_date : first.reading_date;
   const initialValue = usePrev ? first.prev_value : first.value;
-  const cons = rows.filter((r) => r.consumption !== null);
-  const consumption = cons.length ? Math.round(cons.reduce((a, r) => a + r.consumption, 0) * 1000) / 1000 : null;
   return {
     readings_count: rows.length,
     initial_date: initialDate, initial_value: initialValue,
     final_date: last.reading_date, final_value: last.value,
-    consumption,
+    consumption: sum.covered_days ? sum.total : null,
     days: F.diffDays(initialDate, last.reading_date),
     has_reset: rows.some((r) => r.is_reset),
+    ...base,
   };
 }
 
 /** Fechamento de um medidor em um mês (month = 0 → ano inteiro). */
-function closingForMonth(db, meterId, year, month) {
+function closingForMonth(db, meterId, year, month, today) {
   const { from, to } = F.closingRange(year, month);
-  return closingForMeter(db, meterId, from, to);
+  return closingForMeter(db, meterId, from, to, today);
+}
+
+/** Consumo por medidor em um período (mapa meter_id → fechamento). */
+function consumptionByMeter(db, from, to, condominiumId) {
+  const map = new Map();
+  for (const m of listMeters(db, { condominiumId })) {
+    const c = closingForMeter(db, m.id, from, to);
+    if (c.covered_days || c.readings_count) map.set(m.id, c);
+  }
+  return map;
+}
+
+/**
+ * Consumo total por tipo (água, gás, energia...) em um período, incluindo o consumo
+ * estimado dos dias sem leitura. Considera apenas medidores PRINCIPAIS para não somar
+ * em dobro os medidores de áreas específicas (que normalmente são submedições).
+ */
+function consumptionByType(db, from, to, condominiumId) {
+  const types = db.prepare('SELECT * FROM utility_types ORDER BY sort_order').all();
+  const out = [];
+  for (const m of listMeters(db, { condominiumId, activeOnly: true }).filter((x) => x.kind === 'principal')) {
+    const c = closingForMeter(db, m.id, from, to);
+    if (!c.covered_days) continue;
+    let t = out.find((x) => x.utility_type === m.utility_type);
+    if (!t) {
+      const ty = types.find((x) => x.code === m.utility_type);
+      t = { utility_type: ty.code, name: ty.name, unit: ty.unit, color: ty.color, icon: ty.icon, consumption: 0, estimated: 0 };
+      out.push(t);
+    }
+    t.consumption = Math.round((t.consumption + c.consumption) * 1000) / 1000;
+    t.estimated = Math.round((t.estimated + c.estimated) * 1000) / 1000;
+  }
+  return out;
 }
 
 function monthKeys(count, today = F.todayISO()) {
@@ -194,13 +206,16 @@ function chartSeries(db, { condominiumId, months = 6, today = F.todayISO() }) {
   const keys = monthKeys(months, today);
   const from = F.closingRange(keys[0].year, keys[0].month).from;
   const to = F.closingRange(keys[keys.length - 1].year, keys[keys.length - 1].month).to;
-  const params = [from, to];
-  let extra = '';
-  if (condominiumId) { extra = 'AND m.condominium_id = ?'; params.push(condominiumId); }
-  const rows = db.prepare(`SELECT strftime('%Y-%m', v.reading_date, '-1 day') AS ym, m.utility_type, ROUND(SUM(v.consumption),3) AS consumption
-      FROM v_readings v JOIN meters m ON m.id = v.meter_id JOIN condominiums c ON c.id = m.condominium_id
-      WHERE v.reading_date BETWEEN ? AND ? AND m.kind = 'principal' AND c.status = 'active' ${extra}
-      GROUP BY ym, m.utility_type`).all(...params);
+  // Soma por mês (regra do fechamento) de registrado + estimado, só medidores principais.
+  const rows = [];
+  for (const m of listMeters(db, { condominiumId, activeOnly: true }).filter((x) => x.kind === 'principal')) {
+    for (const d of E.dailySeries(db, m, from, to, today)) {
+      const ym = F.billingMonth(d.date);
+      let r = rows.find((x) => x.ym === ym && x.utility_type === m.utility_type);
+      if (!r) { r = { ym, utility_type: m.utility_type, consumption: 0 }; rows.push(r); }
+      r.consumption = Math.round((r.consumption + d.registered + d.estimated) * 1000) / 1000;
+    }
+  }
   const types = db.prepare('SELECT * FROM utility_types WHERE active = 1 ORDER BY sort_order').all();
   const labels = keys.map((k) => `${F.monthName(k.month).slice(0, 3)}/${String(k.year).slice(2)}`);
   const series = types.map((t) => ({
@@ -239,7 +254,7 @@ function alerts(db, { condominiumId, today = F.todayISO() } = {}) {
       const n = m.missing_dates.length;
       const list = m.missing_dates.slice(-5).map((d) => F.fmtDate(d).slice(0, 5)).join(', ');
       out.push({ level: 'danger', kind: 'atrasada', icon: 'clock-alert', condominium_id: m.condominium_id, meter_id: m.meter_id,
-        text: `${m.condominium_name}: ${label} sem leitura em ${n} dia${n > 1 ? 's' : ''} (${n > 5 ? '…, ' : ''}${list}).` });
+        text: `${m.condominium_name}: ${label} — leitura não realizada em ${n} dia${n > 1 ? 's' : ''} (${n > 5 ? '…, ' : ''}${list}).` });
     } else if (m.status === 'atrasada') {
       const d = -m.days_to_due;
       out.push({ level: 'danger', kind: 'atrasada', icon: 'clock-alert', condominium_id: m.condominium_id, meter_id: m.meter_id,
@@ -341,17 +356,25 @@ function calendarEvents(db, { year, month, condominiumId, today = F.todayISO() }
   const readDays = db.prepare('SELECT DISTINCT reading_date d FROM readings WHERE meter_id = ? AND reading_date BETWEEN ? AND ?');
   const firstRead = db.prepare('SELECT MIN(reading_date) d FROM readings WHERE meter_id = ?');
   const dailyPlanned = new Map(); // "data|condomínio" → medidores diários esperados
+  const estimates = new Map(); // "medidor|data" → texto da estimativa
   for (const st of meterStatuses(db, { condominiumId, today })) {
     if (st.daily && st.status !== 'sem_leitura') {
       // Medidor diário: uma leitura esperada por dia, a partir da primeira leitura.
       const base = { condominium_id: st.condominium_id, condominium_name: st.condominium_name, utility_type: st.utility_type,
         type_name: st.type_name, icon: st.type_icon, meter_name: st.meter_name };
       const start = firstRead.get(st.meter_id).d;
+      // Consumo estimado dos dias sem leitura (a pendência continua visível).
+      for (const x of E.dailySeries(db, { id: st.meter_id, frequency_days: 1 }, from, to, today)) {
+        if (x.kind === 'estimado') estimates.set(`${st.meter_id}|${x.date}`, `consumo estimado ${F.fmtNum(x.estimated)} ${st.unit}`);
+        else if (x.kind === 'sem_estimativa') estimates.set(`${st.meter_id}|${x.date}`, x.reason === 'historico' ? E.MSG_NO_HISTORY : 'sem estimativa');
+      }
       const have = new Set(readDays.all(st.meter_id, from, to).map((r) => r.d));
       for (let d = from; d <= to; d = F.addDays(d, 1)) {
         if (d < start || have.has(d)) continue;
         if (d < today) {
-          events.push({ ...base, date: d, kind: 'pendente', title: `${st.type_name} — dia sem leitura`, detail: st.meter_name });
+          const est = estimates.get(`${st.meter_id}|${d}`);
+          events.push({ ...base, date: d, kind: 'pendente', title: `${st.type_name} — leitura não realizada`,
+            detail: `${st.meter_name}${est ? ` · ${est}` : ''}` });
         } else {
           const key = `${d}|${st.condominium_id}`;
           if (!dailyPlanned.has(key)) dailyPlanned.set(key, { ...base, date: d, meters: [] });

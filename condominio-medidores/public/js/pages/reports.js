@@ -14,6 +14,13 @@ function tabs(active) {
   return html`<div class="tabs">${t.map(([k, l, i]) => html`<a href="#/relatorios/${k}" class="${k === active ? 'active' : ''}">${icon(i)} ${l}</a>`)}</div>`;
 }
 
+/** Célula da comparação: consumo do mês, dias apurados e média diária. */
+function cmpCell(p, current = false) {
+  if (!p || p.consumption === null || p.consumption === undefined) return html`<td class="num">—</td>`;
+  return html`<td class="num ${current ? 'cons' : ''}">${fmtNum(p.consumption)}${p.estimated ? html` <span class="est">(est. ${fmtNum(p.estimated)})</span>` : ''}
+    <div class="small muted">${p.covered_days} dia(s) · ${fmtNum(p.daily_avg)}/dia</div></td>`;
+}
+
 function head() {
   return html`<div class="page-head"><div><h1>Relatórios</h1><p>Fechamento mensal, gráficos de consumo e relatórios para exportar.</p></div></div>`;
 }
@@ -102,15 +109,23 @@ async function renderClosing(el, ctx, condos) {
       ${c.items.map((i) => html`<div class="card closing-card">
         <div class="card-head"><h3>${typeDot(i.utility_type)} ${i.type_name}</h3><span class="muted small">${i.meter_name}${i.kind === 'area' ? ' (área)' : ''}</span></div>
         <div class="card-body">
-          ${i.readings_count ? html`<div class="rows">
+          ${i.readings_count || i.days_without_reading ? html`<div class="rows">
             <div><div class="k">Leitura inicial</div><div class="v">${fmtNum(i.initial_value)}</div><div class="d">${fmtDate(i.initial_date)}</div></div>
             <div><div class="k">Leitura final</div><div class="v">${fmtNum(i.final_value)}</div><div class="d">${fmtDate(i.final_date)}</div></div>
-            <div class="total"><div class="k">Consumo total</div><div class="v">${fmtNum(i.consumption)} <small>${i.unit}</small></div><div class="d">${i.days} dias · ${i.readings_count} leitura(s)</div></div>
+            <div class="total"><div class="k">Consumo total considerado</div><div class="v">${fmtNum(i.consumption)} <small>${i.unit}</small></div><div class="d">${i.days ?? '—'} dias · ${i.readings_count} leitura(s)</div></div>
           </div>
+          <div class="rows rows-4">
+            <div><div class="k">Consumo registrado</div><div class="v">${fmtNum(i.registered)}</div></div>
+            <div class="${i.estimated ? 'est-cell' : ''}"><div class="k">Consumo estimado</div><div class="v">${i.estimated ? fmtNum(i.estimated) : '—'}</div></div>
+            <div><div class="k">Dias com leitura</div><div class="v">${i.days_with_reading}</div></div>
+            <div class="${i.days_without_reading ? 'miss-cell' : ''}"><div class="k">Dias sem leitura</div><div class="v">${i.days_without_reading}</div></div>
+          </div>
+          ${i.messages && i.messages.length ? html`<div class="est-box">${i.messages.map((msg) => html`<div class="alert alert-warning small">${icon('info')}<div>${msg}</div></div>`)}</div>` : ''}
           <div class="small" style="margin-top:12px;display:flex;gap:14px;flex-wrap:wrap">
-            ${i.average !== null ? html`<span>Média 6 meses: <b>${fmtNum(i.average)} ${i.unit}</b></span>` : ''}
-            ${trend(i.vs_average_pct, 'vs. média')}
-            ${trend(i.vs_last_pct, 'vs. mês anterior')}
+            ${i.daily_avg !== null ? html`<span>Média diária: <b>${fmtNum(i.daily_avg)} ${i.unit}/dia</b></span>` : ''}
+            ${i.average_daily !== null ? html`<span>Meses anteriores: <b>${fmtNum(i.average_daily)} ${i.unit}/dia</b></span>` : ''}
+            ${trend(i.vs_average_pct, 'vs. média diária')}
+            ${trend(i.vs_last_pct, 'vs. mês anterior (por dia)')}
           </div>
           ${i.has_reset ? html`<div class="small muted" style="margin-top:6px">${icon('info', 'small')} Houve ocorrência (troca, zeramento ou correção) neste mês: o consumo não é "final − inicial".</div>` : ''}
           ${i.changed_since_closing ? html`<div class="small" style="margin-top:6px;color:var(--warning)">${icon('triangle-alert', 'small')} Diferente do fechamento gravado (${fmtNum(i.saved.consumption)} ${i.unit}).</div>` : ''}`
@@ -124,11 +139,13 @@ async function renderClosing(el, ctx, condos) {
       <div class="table-wrap"><table class="table">
         <thead><tr><th>Mês</th>${c.items.map((i) => html`<th class="num">${i.type_name}${c.items.filter((x) => x.utility_type === i.utility_type).length > 1 ? ` — ${i.meter_name}` : ''} (${i.unit})</th>`)}</tr></thead>
         <tbody>
-          ${(c.items[0]?.previous || []).map((p, idx) => html`<tr><td>${capital(p.label)}</td>${c.items.map((i) => html`<td class="num">${fmtNum(i.previous[idx].consumption)}</td>`)}</tr>`)}
-          <tr><td><b>${capital(c.month_name.slice(0, 3))}/${c.year} (atual)</b></td>${c.items.map((i) => html`<td class="num cons">${fmtNum(i.consumption)}</td>`)}</tr>
+          ${(c.items[0]?.previous || []).map((p, idx) => html`<tr><td>${capital(p.label)}</td>${c.items.map((i) => cmpCell(i.previous[idx]))}</tr>`)}
+          <tr><td><b>${capital(c.month_name.slice(0, 3))}/${c.year} (atual)</b></td>${c.items.map((i) => cmpCell(i, true))}</tr>
         </tbody>
-        <tfoot><tr><td>Média dos meses anteriores</td>${c.items.map((i) => html`<td class="num">${fmtNum(i.average)}</td>`)}</tr></tfoot>
+        <tfoot><tr><td>Média diária dos meses anteriores</td>${c.items.map((i) => html`<td class="num">${i.average_daily !== null ? `${fmtNum(i.average_daily)}/dia` : '—'}</td>`)}</tr></tfoot>
       </table></div>
+      <div class="card-body small muted">${icon('info', 'small')} A comparação usa a <b>média diária</b> (consumo ÷ dias apurados), porque os meses podem ter
+        quantidades diferentes de dias com leitura. O consumo inclui o estimado dos dias sem leitura (marcado com "est.").</div>
     </div>` : html`<div class="card">${emptyState('gauge', 'Nenhum medidor', 'Este condomínio ainda não possui medidores.')}</div>`}
   `);
   bindPeriod(el, 'relatorios/fechamento');
@@ -230,13 +247,19 @@ async function renderReport(el, ctx, condos) {
         <div><div class="k">Concessionária</div><div class="v">${rep.utility_name}</div></div>
       </div>
 
+      ${rep.notes && rep.notes.length ? html`<div class="est-box" style="margin:-4px 0 16px">${rep.notes.map((n) => html`<div class="alert alert-warning">${icon('info')}<div>${n}</div></div>`)}</div>` : ''}
+
       ${rep.summary.length ? html`<h3 style="font-size:15px;margin-bottom:8px">Resumo por medidor</h3>
         <div class="table-wrap" style="margin-bottom:18px"><table class="table">
-          <thead><tr><th>Medidor</th><th class="num">Leitura inicial</th><th class="num">Leitura final</th><th class="num">Dias</th><th class="num">Consumo</th></tr></thead>
+          <thead><tr><th>Medidor</th><th class="num">Leitura inicial</th><th class="num">Leitura final</th><th class="num">Registrado</th><th class="num">Estimado</th>
+            <th class="num">Total considerado</th><th class="num">Dias com / sem leitura</th></tr></thead>
           <tbody>${rep.summary.map((s) => html`<tr><td>${s.type_name} — ${s.meter_name}${s.kind === 'area' ? ' (área)' : ''}</td>
             <td class="num">${fmtNum(s.initial_value)} <span class="muted small">${fmtDate(s.initial_date)}</span></td>
             <td class="num">${fmtNum(s.final_value)} <span class="muted small">${fmtDate(s.final_date)}</span></td>
-            <td class="num">${s.days}</td><td class="num cons">${fmtNum(s.consumption)} ${s.unit}</td></tr>`)}</tbody>
+            <td class="num">${fmtNum(s.registered)}</td>
+            <td class="num">${s.estimated ? html`<span class="est">${fmtNum(s.estimated)}</span>` : '—'}</td>
+            <td class="num cons">${fmtNum(s.consumption)} ${s.unit}</td>
+            <td class="num">${s.days_with_reading} / ${s.days_without_reading ? html`<b style="color:var(--danger)">${s.days_without_reading}</b>` : 0}</td></tr>`)}</tbody>
         </table></div>` : ''}
 
       <h3 style="font-size:15px;margin-bottom:8px">Leituras do período</h3>
@@ -246,16 +269,20 @@ async function renderReport(el, ctx, condos) {
           <td class="nowrap">${fmtDate(r.reading_date)} <span class="muted small">${r.weekday}</span>
             ${r.role === 'inicial' ? html`<div><span class="badge b-gray">leitura inicial</span></div>` : r.role === 'fechamento' ? html`<div><span class="badge b-blue">fechamento</span></div>` : ''}</td>
           <td>${r.type_name} — ${r.meter_name}</td>
-          <td class="num">${fmtNum(r.value)} ${r.unit}</td>
-          <td class="num cons">${r.role === 'inicial' ? html`<span class="muted small" title="Consumo pertence ao mês anterior">mês anterior</span>`
-            : r.occurrence ? html`<span class="badge b-yellow">${occurrenceLabel(r.occurrence)}</span>` : r.consumption !== null ? `${fmtNum(r.consumption)} ${r.unit}` : '—'}</td>
+          <td class="num">${r.kind === 'nao_realizada' ? html`<span class="badge b-red">Leitura não realizada</span>` : html`${fmtNum(r.value)} ${r.unit}`}</td>
+          <td class="num cons">${r.kind === 'nao_realizada'
+            ? (r.estimated !== null ? html`<span class="est" title="${r.reason_text}">${fmtNum(r.estimated)} ${r.unit} (estimado)</span>` : html`<span class="muted small">${r.reason_text}</span>`)
+            : r.role === 'inicial' ? html`<span class="muted small" title="Consumo pertence ao mês anterior">mês anterior</span>`
+              : r.occurrence ? html`<span class="badge b-yellow">${occurrenceLabel(r.occurrence)}</span>`
+                : r.registered !== null ? html`${fmtNum(r.registered)} ${r.unit}${r.gap && r.gap.estimated ? html`<span class="gap-mark" title="Intervalo de ${r.gap.days + 1} dias: ${fmtNum(r.gap.measured)} medidos; ${fmtNum(r.gap.estimated)} estimados para os dias sem leitura.">*</span>` : ''}` : '—'}</td>
           <td>${r.responsible || '—'}</td></tr>`)}</tbody>
       </table></div>` : html`<p class="muted">Nenhuma leitura registrada no período.</p>`}
 
       <div class="report-total">
         <h3>CONSUMO TOTAL DO PERÍODO</h3>
-        ${rep.totals.length ? rep.totals.map((t) => html`<div class="row"><span>${t.type_name}</span><b>${fmtNum(t.consumption)} ${t.unit}</b></div>`) : html`<div class="muted">Sem consumo no período.</div>`}
+        ${rep.totals.length ? rep.totals.map((t) => html`<div class="row"><span>${t.type_name}${t.estimated ? html` <span class="est" style="font-size:13px">(inclui ${fmtNum(t.estimated)} ${t.unit} estimado)</span>` : ''}</span><b>${fmtNum(t.consumption)} ${t.unit}</b></div>`) : html`<div class="muted">Sem consumo no período.</div>`}
       </div>
+      ${rep.rows.some((r) => r.gap && r.gap.estimated) ? html`<p class="small muted">* Leitura feita após dias sem leitura: o consumo registrado é o medido no intervalo menos o consumo estimado dos dias sem leitura. O total do intervalo é o que o medidor mediu.</p>` : ''}
       <p class="small muted">A leitura do dia 01 fecha o mês anterior e é a leitura inicial do mês: o consumo dela pertence ao mês anterior e não entra no total.</p>
       ${rep.totals.some((t) => t.area_consumption) ? html`<p class="small muted">O total considera os medidores principais. Medidores de áreas específicas aparecem no resumo.</p>` : ''}
     </div>`);
