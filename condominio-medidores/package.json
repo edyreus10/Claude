@@ -7,9 +7,12 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "demo": "node scripts/seed-demo.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "restore": "node scripts/restore.js",
+    "backup:remoto": "node scripts/backup-remoto.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1140.0",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^13.0.3",
     "chart.js": "^4.5.1",
@@ -25,5 +28,8 @@
   },
   "overrides": {
     "uuid": "^11.1.1"
+  },
+  "devDependencies": {
+    "s3rver": "^3.7.1"
   }
 }

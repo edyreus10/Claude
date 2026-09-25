@@ -16,6 +16,11 @@ const bcrypt = require('bcryptjs');
 const Database = require('better-sqlite3');
 const F = require('../src/format');
 
+// Em produção, só o serviço de ensaio (DEMO_ON_START) pode criar dados de demonstração.
+if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DEMO !== 'true') {
+  console.error('\n  O comando "npm run demo" não pode ser usado no sistema oficial (NODE_ENV=production). Nada foi alterado.\n');
+  process.exit(1);
+}
 const dbFile = process.env.DB_FILE || path.join(__dirname, '..', 'data', 'medidores.db');
 const force = process.argv.includes('--force');
 if (fs.existsSync(dbFile)) {

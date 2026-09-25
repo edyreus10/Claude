@@ -251,6 +251,27 @@ function migrate(db) {
   db.pragma(`user_version = ${SCHEMA_VERSION}`);
 }
 
+/**
+ * Antes de atualizar a estrutura de um banco com dados (nova versão do sistema),
+ * guarda uma cópia completa em backups/antes-da-atualizacao-vX-para-vY-*.db.
+ */
+function backupBeforeMigration(db, dbFile) {
+  if (dbFile === ':memory:') return null;
+  const version = db.pragma('user_version', { simple: true });
+  if (version >= SCHEMA_VERSION) return null;
+  const hasData = db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type = 'table' AND name = 'users'").get().n
+    && db.prepare('SELECT COUNT(*) n FROM users').get().n;
+  if (!hasData) return null;
+  const { BACKUP_DIR } = require('./backup');
+  fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  const stamp = nowLocal().replace(' ', '_').replace(/:/g, '');
+  const target = path.join(BACKUP_DIR, `antes-da-atualizacao-v${version}-para-v${SCHEMA_VERSION}-${stamp}.db`);
+  db.pragma('wal_checkpoint(TRUNCATE)');
+  fs.copyFileSync(dbFile, target);
+  console.log(`  Banco guardado antes da atualização: ${target}`);
+  return target;
+}
+
 function open(file) {
   const dbFile = file || process.env.DB_FILE || path.join(__dirname, '..', 'data', 'medidores.db');
   if (dbFile !== ':memory:') fs.mkdirSync(path.dirname(dbFile), { recursive: true });
@@ -258,6 +279,7 @@ function open(file) {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
+  backupBeforeMigration(db, dbFile);
   db.exec(SCHEMA);
   migrate(db);
   db.file = dbFile;

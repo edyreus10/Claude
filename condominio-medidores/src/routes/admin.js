@@ -189,12 +189,13 @@ module.exports = (db) => {
 
   // ------------------------------------------------------------ Backup
   r.get('/backups', requireAdmin, (_req, res) => {
-    res.json({ dir: backup.BACKUP_DIR, backups: backup.list() });
+    res.json({ dir: backup.BACKUP_DIR, backups: backup.list(), remote: backup.remoteStatus(db) });
   });
 
   r.post('/backups', requireAdmin, async (req, res) => {
     const b = await backup.run(db);
-    audit(db, req.user, { action: 'create', entity: 'backup', description: `${req.user.name} fez um backup manual (${b.name}).` });
+    audit(db, req.user, { action: 'create', entity: 'backup', description: `${req.user.name} fez um backup manual (${b.name})`
+      + `${b.remote ? (b.remote.ok ? ' e a cópia externa foi enviada ao Cloudflare R2' : ` — FALHA na cópia externa: ${b.remote.error}`) : ''}.` });
     res.json(b);
   });
 

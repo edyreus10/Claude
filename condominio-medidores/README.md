@@ -63,9 +63,13 @@ DB_FILE=data/demo.db npm start
   `data/backups/` e guarda os 30 mais recentes.
 - Em **Configurações → Backup** o administrador pode fazer um backup na hora e **baixar** a cópia.
   Guarde uma cópia **fora do servidor** (computador, pen drive ou nuvem) regularmente.
-- **Para restaurar:** pare o sistema, substitua `data/medidores.db` pelo arquivo de backup
-  (renomeando para `medidores.db`), apague `data/medidores.db-wal` e `data/medidores.db-shm` se
-  existirem, copie `data/backups/uploads/` para `data/uploads/` e inicie o sistema.
+- Quando o **Cloudflare R2** está configurado (sistema publicado), cada backup também é enviado
+  para fora do servidor. A situação do último envio aparece em Configurações → Backup.
+- Antes de qualquer atualização que mude a estrutura do banco, o sistema guarda uma cópia
+  (`antes-da-atualizacao-*.db`) na pasta de backups.
+- **Para restaurar:** pare o sistema e rode `npm run restore -- caminho/do/backup.db`
+  (ou `npm run restore -- r2:latest` para o mais recente do R2). O banco atual não é apagado:
+  ele fica guardado como `antes-da-restauracao-*.db`. No Render, veja [PUBLICACAO.md](PUBLICACAO.md).
 
 ---
 
@@ -160,7 +164,11 @@ Total considerado no intervalo: 8,0 m³ (= 508,0 − 500,0, exatamente o que o m
 
 ## Publicação na internet
 
-O sistema funciona em qualquer servidor com Node.js 18+ (ou Docker). O essencial:
+**Forma escolhida: Render + Cloudflare R2.** O passo a passo completo (contas, custos,
+configurações, domínio, restauração e atualização) está em **[PUBLICACAO.md](PUBLICACAO.md)**;
+a configuração do Render já está pronta no arquivo `render.yaml` (na raiz do repositório).
+
+Alternativa: qualquer servidor com Node.js 22 (ou Docker). O essencial:
 
 1. **Servidor com disco permanente** (VPS — ex.: Hostinger, Locaweb, DigitalOcean, AWS Lightsail).
    Evite hospedagens que apagam os arquivos a cada reinício: o banco e os comprovantes ficam em disco.
@@ -230,10 +238,15 @@ src/db.js            estrutura do banco
 src/services.js      regras: consumo, programação, alertas, fechamento, gráficos
 src/reports.js       relatório e exportação PDF/Excel/CSV
 src/backup.js        backup automático diário
+src/remote-backup.js cópia dos backups no Cloudflare R2
+src/restore.js       restauração de backup (arquivo ou R2)
+src/config.js        conferência das configurações de produção
 src/estimates.js     dias sem leitura e consumo estimado
 src/routes/          API (condomínios, medidores, leituras, concessionária, painel, admin)
 public/              interface (index.html, css, js/pages/*)
 scripts/seed-demo.js dados de demonstração
+scripts/restore.js   npm run restore
+scripts/backup-remoto.js  npm run backup:remoto (lista/testa o R2)
 test/                testes automáticos (npm test)
 ```
 
@@ -250,5 +263,10 @@ test/                testes automáticos (npm test)
 | `TRUST_PROXY` | `loopback` | use `1` atrás de proxy HTTPS |
 | `COOKIE_SECURE` | automático | `true` em produção com HTTPS |
 | `TZ` | `America/Sao_Paulo` | fuso horário |
+| `NODE_ENV` | — | `production` exige HTTPS, proxy e disco permanente |
+| `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET` | — | backup externo no Cloudflare R2 |
+| `BACKUP_REMOTE_KEEP` | `90` | quantos backups manter no R2 |
+| `RESTORE_FROM` | — | restaura um backup ao iniciar (uma única vez) |
+| `DEMO_ON_START` | — | só no serviço de demonstração |
 
 As variáveis podem ser colocadas no arquivo `.env` (modelo em `.env.example`).

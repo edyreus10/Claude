@@ -169,6 +169,15 @@ async function renderGeneral(el) {
 }
 
 // ---------------------------------------------------------------- Backup
+// Situação da cópia externa (Cloudflare R2), quando o sistema está publicado.
+function remoteLine(r) {
+  if (!r || !r.configured) return html`<p class="small muted" style="margin-bottom:0">Cópia externa (Cloudflare R2): não configurada.</p>`;
+  if (!r.last) return html`<p class="small muted" style="margin-bottom:0">Cópia externa (Cloudflare R2): configurada, aguardando o primeiro envio.</p>`;
+  return r.last.ok
+    ? html`<p class="small" style="margin-bottom:0">${icon('check')} Cópia externa (Cloudflare R2): último envio em ${fmtDateTime(r.last.at)}.</p>`
+    : html`<div class="alert alert-danger" style="margin-top:10px">${icon('circle-alert')}<div>Falha ao enviar a cópia externa (Cloudflare R2) em ${fmtDateTime(r.last.at)}: ${r.last.error}</div></div>`;
+}
+
 async function renderBackup(el, ctx) {
   const d = await api.get('/api/backups');
   if (!ctx.isCurrent()) return;
@@ -182,6 +191,7 @@ async function renderBackup(el, ctx) {
         <button class="btn btn-primary" id="bk-now">${icon('save')} Fazer backup agora</button>
       </div>
       <p class="small muted" style="margin-bottom:0">Pasta dos backups no servidor: <code>${d.dir}</code></p>
+      ${remoteLine(d.remote)}
     </div></div>
     <div class="card">
       ${d.backups.length ? html`<div class="table-wrap"><table class="table">

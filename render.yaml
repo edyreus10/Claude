@@ -1,0 +1,90 @@
+# Configuração do Render (Blueprint) para o Controle de Medidores.
+# O Render lê este arquivo e cria os serviços automaticamente.
+# Passo a passo completo: condominio-medidores/PUBLICACAO.md
+#
+# Nada aqui contém senhas: os valores marcados com "sync: false" são digitados
+# pelo administrador no painel do Render quando o Blueprint é criado.
+
+services:
+  # ---------------------------------------------------------------- Sistema oficial
+  - type: web
+    name: controle-medidores
+    runtime: node
+    plan: starter            # plano pago (US$ 7/mês): necessário para ter disco permanente
+    region: virginia         # EUA (leste) — a região do Render mais próxima do Brasil
+    rootDir: condominio-medidores
+    branch: main
+    autoDeploy: false        # atualizações só quando você clicar em "Deploy" (mais seguro)
+    buildCommand: npm ci --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    disk:
+      name: dados            # banco de dados, comprovantes e backups ficam aqui
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: TZ
+        value: America/Sao_Paulo
+      - key: DATA_DIR
+        value: /var/data
+      - key: DB_FILE
+        value: /var/data/medidores.db
+      - key: TRUST_PROXY
+        value: "1"
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: BACKUP_KEEP
+        value: "30"
+      # Primeiro administrador (usado só quando o banco está vazio)
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      # Cloudflare R2 — cópia dos backups fora do servidor
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: BACKUP_REMOTE_KEEP
+        value: "90"
+
+  # ---------------------------------------------------------------- Ensaio (gratuito)
+  # Cópia do sistema SÓ com dados de demonstração, para testar antes de usar de verdade.
+  # No plano gratuito não há disco: os dados de demonstração são recriados a cada reinício.
+  # Pode ser apagado no painel do Render depois do ensaio.
+  - type: web
+    name: controle-medidores-demonstracao
+    runtime: node
+    plan: free
+    region: virginia
+    rootDir: condominio-medidores
+    branch: main
+    autoDeploy: false
+    buildCommand: npm ci --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: TZ
+        value: America/Sao_Paulo
+      - key: DATA_DIR
+        value: /tmp/medidores-demo
+      - key: DB_FILE
+        value: /tmp/medidores-demo/medidores.db
+      - key: TRUST_PROXY
+        value: "1"
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: DEMO_ON_START
+        value: "true"
